@@ -135,6 +135,9 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Printf("Context cancelled, shutting down...")
 	}
 
+	// Stop receiving signals on this channel
+	signal.Stop(sigChan)
+
 	return s.Shutdown()
 }
 

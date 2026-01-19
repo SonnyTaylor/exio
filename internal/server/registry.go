@@ -187,6 +187,10 @@ func (r *SessionRegistry) ForEach(fn func(subdomain string, entry *SessionEntry)
 func (r *SessionRegistry) CloseAll() {
 	r.sessions.Range(func(key, value interface{}) bool {
 		entry := value.(*SessionEntry)
+		// Close TCP listener first to unblock Accept() calls
+		if entry.TCPListener != nil {
+			entry.TCPListener.Close()
+		}
 		entry.Session.Close()
 		return true
 	})

@@ -291,17 +291,18 @@ func (c *Client) Run(ctx context.Context) error {
 	isTCP := c.config.TunnelType == protocol.TunnelTypeTCP
 
 	// Accept incoming streams
+acceptLoop:
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			// Check if we're shutting down
 			select {
 			case <-c.ctx.Done():
-				break
+				break acceptLoop
 			default:
 			}
 			if session.IsClosed() {
-				break
+				break acceptLoop
 			}
 			c.logger.Printf("Failed to accept stream: %v", err)
 			continue

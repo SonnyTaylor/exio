@@ -192,6 +192,8 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 
 	go func() {
 		<-sigChan
+		// Stop receiving further signals on this channel
+		signal.Stop(sigChan)
 		if !useTUI {
 			// Print a clean shutdown message
 			fmt.Println()
@@ -284,6 +286,8 @@ func runTCPTunnel(cmd *cobra.Command, args []string) error {
 
 	go func() {
 		<-sigChan
+		// Stop receiving further signals on this channel
+		signal.Stop(sigChan)
 		fmt.Println()
 		shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
 		fmt.Println(shutdownStyle.Render("   Shutting down tunnel..."))
