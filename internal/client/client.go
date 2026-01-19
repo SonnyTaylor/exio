@@ -206,9 +206,9 @@ func (c *Client) Connect(ctx context.Context) error {
 			case http.StatusUnauthorized:
 				return fmt.Errorf("authentication failed: invalid token")
 			case http.StatusConflict:
-				return fmt.Errorf("subdomain '%s' is already in use", c.config.Subdomain)
+				return fmt.Errorf("subdomain '%s' is already in use (try a different name or omit --subdomain for a random one)", c.config.Subdomain)
 			case http.StatusBadRequest:
-				return fmt.Errorf("invalid subdomain format")
+				return fmt.Errorf("invalid subdomain format: must be 3-63 characters, alphanumeric and hyphens only")
 			case http.StatusServiceUnavailable:
 				return fmt.Errorf("no available TCP ports on server")
 			}

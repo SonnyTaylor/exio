@@ -35,13 +35,16 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "exio",
 	Short: "Expose local services to the internet",
-	Long: `Exio is a high-performance tunneling client that exposes local TCP services
+	Long: `Exio is a high-performance tunneling client that exposes local services
 to the public internet via a secure, reverse-proxy architecture.
 
 Examples:
-  exio http 3000                    # Expose local port 3000
-  exio http 3000 --subdomain myapp  # Request specific subdomain
-  exio http 8080 --host 192.168.1.5 # Forward to different host
+  exio http 3000                       # Expose local HTTP port 3000
+  exio http 3000 --subdomain myapp     # Request specific subdomain
+  exio http 3000 --auth user:pass      # Protect with Basic Auth
+  exio http 3000 --qr --copy           # Show QR code & copy URL
+  exio tcp 5432                        # Expose PostgreSQL database
+  exio tcp 22 --subdomain my-ssh       # Expose SSH
 
 Configuration via environment variables:
   EXIO_SERVER - Server URL (e.g., https://tunnel.example.com)
@@ -54,8 +57,9 @@ var httpCmd = &cobra.Command{
 	Long: `Expose a local HTTP service to the internet through the Exio tunnel.
 
 The local service will be accessible at https://<subdomain>.<base-domain>`,
-	Args: cobra.ExactArgs(1),
-	RunE: runHTTPTunnel,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runHTTPTunnel,
+	SilenceUsage: true, // Don't show usage on connection errors
 }
 
 var tcpCmd = &cobra.Command{
@@ -64,8 +68,9 @@ var tcpCmd = &cobra.Command{
 	Long: `Expose a local TCP service (database, SSH, game server, etc.) to the internet.
 
 The server will allocate a public TCP port for your tunnel.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTCPTunnel,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runTCPTunnel,
+	SilenceUsage: true, // Don't show usage on connection errors
 }
 
 func init() {
