@@ -2,7 +2,7 @@
 
 **Expose I/O** - A high-performance, self-hosted tunneling protocol for exposing local services to the internet.
 
-Exio creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
+Exio creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP and TCP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
 
 [![CI](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml/badge.svg)](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/SonnyTaylor/exio)](https://github.com/SonnyTaylor/exio/releases)
@@ -10,11 +10,16 @@ Exio creates secure tunnels from your local machine to a public server, allowing
 
 ## Features
 
+- **HTTP & TCP tunneling** - Expose web apps, databases, SSH, game servers, and more
 - **WebSocket-based transport** - Reliably traverses NATs, firewalls, and proxies
-- **Yamux multiplexing** - Multiple concurrent HTTP requests over a single connection
+- **Yamux multiplexing** - Multiple concurrent requests over a single connection
+- **Basic Auth protection** - Protect tunnel endpoints with HTTP Basic Authentication
+- **Rate limiting** - Server-side per-tunnel rate limiting to prevent abuse
+- **QR code display** - Quick mobile access with `--qr` flag
+- **Clipboard copy** - Auto-copy public URL with `--copy` flag
+- **Interactive TUI** - Real-time request inspection with `--tui` flag
 - **Automatic Host rewriting** - Works with development servers that have DNS rebinding protection
 - **PSK authentication** - Simple shared-secret authentication model
-- **Interactive TUI** - Real-time request inspection with `--tui` flag
 - **Cloudflare-ready** - Designed to sit behind Cloudflare Tunnel for production deployments
 - **Flexible routing** - Path-based (`tunnel.example.com/id/`) or subdomain-based (`id.tunnel.example.com`) routing
 
@@ -56,6 +61,7 @@ This interactive wizard will prompt you for your server URL and authentication t
 
 ### 2. Expose Your Service
 
+**HTTP Tunnels:**
 ```bash
 # Expose local port 3000
 exio http 3000
@@ -65,11 +71,27 @@ exio http 3000 --subdomain my-app
 
 # With real-time request viewer
 exio http 3000 --tui
+
+# Protect with Basic Auth
+exio http 3000 --auth user:password
+
+# Show QR code and copy URL to clipboard
+exio http 3000 --qr --copy
+```
+
+**TCP Tunnels:**
+```bash
+# Expose a local database (e.g., PostgreSQL)
+exio tcp 5432
+
+# Expose SSH
+exio tcp 22 --subdomain my-ssh
 ```
 
 Your service will be available at a URL like:
-- **Path mode (default)**: `https://tunnel.example.com/my-app/`
-- **Subdomain mode**: `https://my-app.tunnel.example.com`
+- **HTTP (path mode)**: `https://tunnel.example.com/my-app/`
+- **HTTP (subdomain mode)**: `https://my-app.tunnel.example.com`
+- **TCP**: `tcp://tunnel.example.com:10001` (server assigns port)
 
 ### Manual Configuration
 
@@ -243,8 +265,11 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 | `--token, -t` | `EXIO_TOKEN` | Authentication token (required) |
 | `--subdomain` | - | Requested subdomain |
 | `--host` | - | Local host to forward to (default: 127.0.0.1) |
-| `--no-rewrite-host` | - | Don't rewrite Host header |
-| `--tui` | - | Enable interactive request viewer |
+| `--no-rewrite-host` | - | Don't rewrite Host header (HTTP only) |
+| `--tui` | - | Enable interactive request viewer (HTTP only) |
+| `--auth` | - | Protect with HTTP Basic Auth (`user:pass`) (HTTP only) |
+| `--qr` | - | Display QR code for the public URL |
+| `--copy` | - | Copy public URL to clipboard |
 
 ### Client Commands
 
@@ -252,6 +277,7 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 |---------|-------------|
 | `exio init` | Interactive setup wizard |
 | `exio http <port>` | Expose local HTTP service |
+| `exio tcp <port>` | Expose local TCP service (database, SSH, etc.) |
 | `exio version` | Show version information |
 
 ### Server Commands
@@ -270,6 +296,9 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 | `--token, -t` | `EXIO_TOKEN` | Authentication token (required) |
 | `--domain, -d` | `EXIO_BASE_DOMAIN` | Base domain for tunnel URLs (required) |
 | `--routing-mode, -r` | `EXIO_ROUTING_MODE` | Routing mode: `path` (default) or `subdomain` |
+| `--tcp-port-start` | `EXIO_TCP_PORT_START` | Start of TCP port range (default: 10000) |
+| `--tcp-port-end` | `EXIO_TCP_PORT_END` | End of TCP port range (default: 20000) |
+| `--rate-limit` | `EXIO_RATE_LIMIT` | Rate limit per tunnel (requests/min, 0 = unlimited) |
 
 ### Routing Modes
 

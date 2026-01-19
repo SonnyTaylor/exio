@@ -19,14 +19,18 @@ import (
 	"github.com/sonnytaylor/exio/pkg/auth"
 	"github.com/sonnytaylor/exio/pkg/protocol"
 	"github.com/sonnytaylor/exio/pkg/transport"
+	"golang.org/x/time/rate"
 )
 
 // Config holds the server configuration.
 type Config struct {
-	Port        int
-	Token       string
-	BaseDomain  string
-	RoutingMode string // "path" or "subdomain"
+	Port         int
+	Token        string
+	BaseDomain   string
+	RoutingMode  string // "path" or "subdomain"
+	TCPPortStart int    // Start of TCP port allocation range
+	TCPPortEnd   int    // End of TCP port allocation range
+	RateLimit    int    // Requests per minute (0 = unlimited)
 }
 
 // ConfigFromEnv creates a config from environment variables.
@@ -41,11 +45,29 @@ func ConfigFromEnv() *Config {
 		routingMode = protocol.RoutingModePath // Default to path-based routing
 	}
 
+	tcpPortStart := protocol.DefaultTCPPortStart
+	if p := os.Getenv("EXIO_TCP_PORT_START"); p != "" {
+		fmt.Sscanf(p, "%d", &tcpPortStart)
+	}
+
+	tcpPortEnd := protocol.DefaultTCPPortEnd
+	if p := os.Getenv("EXIO_TCP_PORT_END"); p != "" {
+		fmt.Sscanf(p, "%d", &tcpPortEnd)
+	}
+
+	rateLimit := 0
+	if r := os.Getenv("EXIO_RATE_LIMIT"); r != "" {
+		fmt.Sscanf(r, "%d", &rateLimit)
+	}
+
 	return &Config{
-		Port:        port,
-		Token:       os.Getenv("EXIO_TOKEN"),
-		BaseDomain:  os.Getenv("EXIO_BASE_DOMAIN"),
-		RoutingMode: routingMode,
+		Port:         port,
+		Token:        os.Getenv("EXIO_TOKEN"),
+		BaseDomain:   os.Getenv("EXIO_BASE_DOMAIN"),
+		RoutingMode:  routingMode,
+		TCPPortStart: tcpPortStart,
+		TCPPortEnd:   tcpPortEnd,
+		RateLimit:    rateLimit,
 	}
 }
 
@@ -68,7 +90,7 @@ func New(config *Config) (*Server, error) {
 
 	s := &Server{
 		config:        config,
-		registry:      NewSessionRegistry(),
+		registry:      NewSessionRegistry(config.TCPPortStart, config.TCPPortEnd),
 		authenticator: authenticator,
 		logger:        log.New(os.Stdout, "[exiod] ", log.LstdFlags|log.Lmsgprefix),
 	}
@@ -152,6 +174,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	subdomain = strings.ToLower(subdomain)
 
+	// Get tunnel type (default to HTTP)
+	tunnelType := r.URL.Query().Get(protocol.TunnelTypeQueryParam)
+	if tunnelType == "" {
+		tunnelType = protocol.TunnelTypeHTTP
+	}
+
+	// Validate tunnel type
+	if tunnelType != protocol.TunnelTypeHTTP && tunnelType != protocol.TunnelTypeTCP {
+		http.Error(w, "Invalid tunnel type", http.StatusBadRequest)
+		return
+	}
+
 	// Validate subdomain format
 	if err := ValidateSubdomain(subdomain); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -164,10 +198,42 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For TCP tunnels, allocate a port
+	var tcpPort int
+	var tcpListener net.Listener
+	if tunnelType == protocol.TunnelTypeTCP {
+		var err error
+		tcpPort, err = s.registry.AllocateTCPPort(subdomain)
+		if err != nil {
+			s.logger.Printf("Failed to allocate TCP port: %v", err)
+			http.Error(w, "No available TCP ports", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Start TCP listener
+		tcpListener, err = net.Listen("tcp", fmt.Sprintf(":%d", tcpPort))
+		if err != nil {
+			s.logger.Printf("Failed to start TCP listener on port %d: %v", tcpPort, err)
+			s.registry.ReleaseTCPPort(tcpPort)
+			http.Error(w, "Failed to start TCP listener", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Prepare response headers for WebSocket upgrade
+	responseHeaders := http.Header{}
+	if tunnelType == protocol.TunnelTypeTCP && tcpPort > 0 {
+		responseHeaders.Set("X-Exio-TCP-Port", fmt.Sprintf("%d", tcpPort))
+	}
+
 	// Upgrade to WebSocket
-	wsConn, err := transport.WebSocketUpgrader.Upgrade(w, r, nil)
+	wsConn, err := transport.WebSocketUpgrader.Upgrade(w, r, responseHeaders)
 	if err != nil {
 		s.logger.Printf("WebSocket upgrade failed: %v", err)
+		if tcpListener != nil {
+			tcpListener.Close()
+			s.registry.ReleaseTCPPort(tcpPort)
+		}
 		return
 	}
 
@@ -176,23 +242,43 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Printf("Failed to create session: %v", err)
 		wsConn.Close()
+		if tcpListener != nil {
+			tcpListener.Close()
+			s.registry.ReleaseTCPPort(tcpPort)
+		}
 		return
 	}
 
+	// Create rate limiter if configured
+	var limiter *rate.Limiter
+	if s.config.RateLimit > 0 {
+		// Convert requests per minute to requests per second
+		rps := float64(s.config.RateLimit) / 60.0
+		limiter = rate.NewLimiter(rate.Limit(rps), s.config.RateLimit) // burst = rate limit
+	}
+
 	// Register the session
-	if err := s.registry.Register(subdomain, session); err != nil {
+	if err := s.registry.RegisterWithOptions(subdomain, session, tunnelType, tcpPort, tcpListener, limiter); err != nil {
 		s.logger.Printf("Failed to register session: %v", err)
 		session.Close()
+		if tcpListener != nil {
+			tcpListener.Close()
+			s.registry.ReleaseTCPPort(tcpPort)
+		}
 		return
 	}
 
 	var publicURL string
-	if s.config.RoutingMode == protocol.RoutingModePath {
+	if tunnelType == protocol.TunnelTypeTCP {
+		publicURL = fmt.Sprintf("tcp://%s:%d", s.config.BaseDomain, tcpPort)
+		s.logger.Printf("TCP tunnel established: %s (port %d)", subdomain, tcpPort)
+	} else if s.config.RoutingMode == protocol.RoutingModePath {
 		publicURL = fmt.Sprintf("https://%s/%s/", s.config.BaseDomain, subdomain)
+		s.logger.Printf("HTTP tunnel established: %s", publicURL)
 	} else {
 		publicURL = fmt.Sprintf("https://%s.%s", subdomain, s.config.BaseDomain)
+		s.logger.Printf("HTTP tunnel established: %s", publicURL)
 	}
-	s.logger.Printf("Tunnel established: %s", publicURL)
 
 	// Handle session lifecycle
 	s.wg.Add(1)
@@ -201,10 +287,86 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		defer s.registry.Unregister(subdomain)
 		defer session.Close()
 
+		// For TCP tunnels, start accepting connections
+		if tunnelType == protocol.TunnelTypeTCP && tcpListener != nil {
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.handleTCPListener(tcpListener, session, subdomain)
+			}()
+		}
+
 		// Wait for session to close
 		<-session.Context().Done()
 		s.logger.Printf("Tunnel closed: %s", subdomain)
 	}()
+}
+
+// handleTCPListener accepts incoming TCP connections and bridges them to the tunnel.
+func (s *Server) handleTCPListener(listener net.Listener, session *transport.Session, subdomain string) {
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			// Check if listener was closed
+			select {
+			case <-session.Context().Done():
+				return
+			default:
+				s.logger.Printf("TCP accept error for %s: %v", subdomain, err)
+				continue
+			}
+		}
+
+		// Get session entry for rate limiting
+		entry, err := s.registry.Get(subdomain)
+		if err != nil {
+			conn.Close()
+			continue
+		}
+
+		// Check rate limit
+		if entry.RateLimiter != nil && !entry.RateLimiter.Allow() {
+			s.logger.Printf("TCP rate limit exceeded for %s", subdomain)
+			conn.Close()
+			continue
+		}
+
+		entry.RequestCount.Add(1)
+
+		// Handle connection in goroutine
+		go s.bridgeTCPConnection(conn, session, subdomain)
+	}
+}
+
+// bridgeTCPConnection bridges a TCP connection to the tunnel.
+func (s *Server) bridgeTCPConnection(conn net.Conn, session *transport.Session, subdomain string) {
+	defer conn.Close()
+
+	// Open a new stream to the client
+	stream, err := session.OpenStream()
+	if err != nil {
+		s.logger.Printf("Failed to open stream for TCP tunnel %s: %v", subdomain, err)
+		return
+	}
+	defer stream.Close()
+
+	// Bidirectional copy
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		io.Copy(stream, conn)
+	}()
+
+	go func() {
+		defer wg.Done()
+		io.Copy(conn, stream)
+	}()
+
+	wg.Wait()
 }
 
 // handleRequest handles incoming HTTP requests and routes them to the appropriate tunnel.
@@ -283,6 +445,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	entry, err := s.registry.Get(tunnelID)
 	if err != nil {
 		http.Error(w, "Tunnel not found", http.StatusNotFound)
+		return
+	}
+
+	// Check rate limit
+	if entry.RateLimiter != nil && !entry.RateLimiter.Allow() {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
 

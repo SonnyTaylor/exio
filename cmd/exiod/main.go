@@ -47,11 +47,17 @@ func init() {
 	rootCmd.Flags().StringP("token", "t", "", "Authentication token")
 	rootCmd.Flags().StringP("domain", "d", "", "Base domain for tunnel URLs")
 	rootCmd.Flags().StringP("routing-mode", "r", "path", "Routing mode: 'path' (tunnel.example.com/id/) or 'subdomain' (id.tunnel.example.com)")
+	rootCmd.Flags().Int("tcp-port-start", 10000, "Start of TCP port allocation range")
+	rootCmd.Flags().Int("tcp-port-end", 20000, "End of TCP port allocation range")
+	rootCmd.Flags().Int("rate-limit", 0, "Rate limit per tunnel (requests per minute, 0 = unlimited)")
 
 	viper.BindPFlag("port", rootCmd.Flags().Lookup("port"))
 	viper.BindPFlag("token", rootCmd.Flags().Lookup("token"))
 	viper.BindPFlag("domain", rootCmd.Flags().Lookup("domain"))
 	viper.BindPFlag("routing-mode", rootCmd.Flags().Lookup("routing-mode"))
+	viper.BindPFlag("tcp-port-start", rootCmd.Flags().Lookup("tcp-port-start"))
+	viper.BindPFlag("tcp-port-end", rootCmd.Flags().Lookup("tcp-port-end"))
+	viper.BindPFlag("rate-limit", rootCmd.Flags().Lookup("rate-limit"))
 
 	// Add version command
 	rootCmd.AddCommand(&cobra.Command{
@@ -83,6 +89,9 @@ func initConfig() {
 	viper.BindEnv("token", "EXIO_TOKEN")
 	viper.BindEnv("domain", "EXIO_BASE_DOMAIN")
 	viper.BindEnv("routing-mode", "EXIO_ROUTING_MODE")
+	viper.BindEnv("tcp-port-start", "EXIO_TCP_PORT_START")
+	viper.BindEnv("tcp-port-end", "EXIO_TCP_PORT_END")
+	viper.BindEnv("rate-limit", "EXIO_RATE_LIMIT")
 
 	viper.ReadInConfig()
 }
@@ -94,10 +103,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	config := &server.Config{
-		Port:        viper.GetInt("port"),
-		Token:       viper.GetString("token"),
-		BaseDomain:  viper.GetString("domain"),
-		RoutingMode: routingMode,
+		Port:         viper.GetInt("port"),
+		Token:        viper.GetString("token"),
+		BaseDomain:   viper.GetString("domain"),
+		RoutingMode:  routingMode,
+		TCPPortStart: viper.GetInt("tcp-port-start"),
+		TCPPortEnd:   viper.GetInt("tcp-port-end"),
+		RateLimit:    viper.GetInt("rate-limit"),
 	}
 
 	if config.Token == "" {

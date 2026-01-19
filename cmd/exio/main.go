@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mdp/qrterminal/v3"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -56,6 +58,16 @@ The local service will be accessible at https://<subdomain>.<base-domain>`,
 	RunE: runHTTPTunnel,
 }
 
+var tcpCmd = &cobra.Command{
+	Use:   "tcp <port>",
+	Short: "Expose a local TCP service",
+	Long: `Expose a local TCP service (database, SSH, game server, etc.) to the internet.
+
+The server will allocate a public TCP port for your tunnel.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runTCPTunnel,
+}
+
 func init() {
 	cobra.OnInitialize(initConfig)
 
@@ -72,14 +84,19 @@ func init() {
 	httpCmd.Flags().String("host", "127.0.0.1", "Local host to forward to")
 	httpCmd.Flags().Bool("no-rewrite-host", false, "Don't rewrite the Host header")
 	httpCmd.Flags().Bool("tui", false, "Enable interactive TUI for request inspection")
+	httpCmd.Flags().String("auth", "", "Protect tunnel with HTTP Basic Auth (user:pass)")
+	httpCmd.Flags().Bool("qr", false, "Display QR code for the public URL")
+	httpCmd.Flags().Bool("copy", false, "Copy public URL to clipboard")
 
-	viper.BindPFlag("subdomain", httpCmd.Flags().Lookup("subdomain"))
-	viper.BindPFlag("host", httpCmd.Flags().Lookup("host"))
-	viper.BindPFlag("no-rewrite-host", httpCmd.Flags().Lookup("no-rewrite-host"))
-	viper.BindPFlag("tui", httpCmd.Flags().Lookup("tui"))
+	// TCP command flags
+	tcpCmd.Flags().String("subdomain", "", "Request a specific subdomain")
+	tcpCmd.Flags().String("host", "127.0.0.1", "Local host to forward to")
+	tcpCmd.Flags().Bool("qr", false, "Display QR code for the public URL")
+	tcpCmd.Flags().Bool("copy", false, "Copy public URL to clipboard")
 
 	// Add commands
 	rootCmd.AddCommand(httpCmd)
+	rootCmd.AddCommand(tcpCmd)
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version number",
@@ -128,19 +145,27 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("authentication token is required (set EXIO_TOKEN or use --token)")
 	}
 
-	subdomain := viper.GetString("subdomain")
+	subdomain, _ := cmd.Flags().GetString("subdomain")
 	if subdomain == "" {
 		// Generate a random subdomain
 		subdomain = generateSubdomain()
 	}
+
+	host, _ := cmd.Flags().GetString("host")
+	noRewriteHost, _ := cmd.Flags().GetBool("no-rewrite-host")
+	basicAuth, _ := cmd.Flags().GetString("auth")
+	showQR, _ := cmd.Flags().GetBool("qr")
+	copyURL, _ := cmd.Flags().GetBool("copy")
 
 	config := &client.Config{
 		ServerURL:   serverURL,
 		Token:       token,
 		Subdomain:   subdomain,
 		LocalPort:   port,
-		LocalHost:   viper.GetString("host"),
-		RewriteHost: !viper.GetBool("no-rewrite-host"),
+		LocalHost:   host,
+		RewriteHost: !noRewriteHost,
+		TunnelType:  protocol.TunnelTypeHTTP,
+		BasicAuth:   basicAuth,
 	}
 
 	// Create client
@@ -151,7 +176,7 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	defer c.Close()
 
 	// Check if TUI mode is enabled
-	useTUI := viper.GetBool("tui")
+	useTUI, _ := cmd.Flags().GetBool("tui")
 
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(context.Background())
@@ -166,7 +191,7 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 			// Print a clean shutdown message
 			fmt.Println()
 			shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
-			fmt.Println(shutdownStyle.Render("   ⏹  Shutting down tunnel..."))
+			fmt.Println(shutdownStyle.Render("   Shutting down tunnel..."))
 		}
 		cancel()
 		c.Close()
@@ -192,12 +217,87 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	}
 
 	// Print connection info (non-TUI mode)
-	printConnectionInfo(c)
+	printConnectionInfo(c, showQR, copyURL)
 
 	// Set up styled request logging callback
 	c.OnRequest = func(log protocol.RequestLog) {
 		printRequest(log)
 	}
+
+	// Run and handle traffic
+	return c.Run(ctx)
+}
+
+func runTCPTunnel(cmd *cobra.Command, args []string) error {
+	// Parse port
+	port, err := strconv.Atoi(args[0])
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port: %s", args[0])
+	}
+
+	serverURL := viper.GetString("server")
+	if serverURL == "" {
+		return fmt.Errorf("server URL is required (set EXIO_SERVER or use --server)")
+	}
+
+	token := viper.GetString("token")
+	if token == "" {
+		return fmt.Errorf("authentication token is required (set EXIO_TOKEN or use --token)")
+	}
+
+	subdomain, _ := cmd.Flags().GetString("subdomain")
+	if subdomain == "" {
+		subdomain = generateSubdomain()
+	}
+
+	host, _ := cmd.Flags().GetString("host")
+	showQR, _ := cmd.Flags().GetBool("qr")
+	copyURL, _ := cmd.Flags().GetBool("copy")
+
+	config := &client.Config{
+		ServerURL:  serverURL,
+		Token:      token,
+		Subdomain:  subdomain,
+		LocalPort:  port,
+		LocalHost:  host,
+		TunnelType: protocol.TunnelTypeTCP,
+	}
+
+	// Create client
+	c, err := client.New(config)
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+	defer c.Close()
+
+	// Setup signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println()
+		shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
+		fmt.Println(shutdownStyle.Render("   Shutting down tunnel..."))
+		cancel()
+		c.Close()
+	}()
+
+	c.SetQuietMode(true)
+	connectingStyle := lipgloss.NewStyle().Foreground(mutedColor).Italic(true)
+	fmt.Println()
+	fmt.Println(connectingStyle.Render("   Connecting to server..."))
+
+	// Connect
+	if err := c.Connect(ctx); err != nil {
+		return fmt.Errorf("connection failed: %w", err)
+	}
+
+	// Print connection info
+	printConnectionInfo(c, showQR, copyURL)
 
 	// Run and handle traffic
 	return c.Run(ctx)
@@ -318,7 +418,7 @@ var (
 			Foreground(primaryColor)
 )
 
-func printConnectionInfo(c *client.Client) {
+func printConnectionInfo(c *client.Client, showQR bool, copyURL bool) {
 	// Logo
 	logo := logoStyle.Render(`
    ███████╗██╗  ██╗██╗ ██████╗ 
@@ -343,6 +443,14 @@ func printConnectionInfo(c *client.Client) {
 	urlArrow := arrowStyle.Render("   →")
 	urlValue := urlValueStyle.Render(c.PublicURL())
 	fmt.Printf("%s %s\n", urlArrow, urlValue)
+
+	// Copy to clipboard
+	if copyURL {
+		if err := clipboard.WriteAll(c.PublicURL()); err == nil {
+			copiedStyle := lipgloss.NewStyle().Foreground(mutedColor).Italic(true)
+			fmt.Println(copiedStyle.Render("     (copied to clipboard)"))
+		}
+	}
 	fmt.Println()
 
 	// Forward info
@@ -352,6 +460,20 @@ func printConnectionInfo(c *client.Client) {
 	localAddr := forwardStyle.Render(fmt.Sprintf("%s:%d", c.Config().LocalHost, c.Config().LocalPort))
 	fmt.Printf("%s %s\n", forwardArrow, localAddr)
 	fmt.Println()
+
+	// QR Code
+	if showQR {
+		fmt.Println(urlLabelStyle.Render("   QR Code"))
+		fmt.Println()
+		qrterminal.GenerateWithConfig(c.PublicURL(), qrterminal.Config{
+			Level:     qrterminal.L,
+			Writer:    os.Stdout,
+			BlackChar: qrterminal.WHITE,
+			WhiteChar: qrterminal.BLACK,
+			QuietZone: 2,
+		})
+		fmt.Println()
+	}
 
 	// Divider
 	divider := lipgloss.NewStyle().Foreground(mutedColor).Render("   " + "─────────────────────────────────────────────────")
@@ -363,10 +485,12 @@ func printConnectionInfo(c *client.Client) {
 	fmt.Println(helpText)
 	fmt.Println()
 
-	// Request log header
-	headerStyle := lipgloss.NewStyle().Foreground(mutedColor).Bold(true)
-	fmt.Println(headerStyle.Render("   Requests"))
-	fmt.Println()
+	// Request log header (only for HTTP tunnels)
+	if c.Config().TunnelType != protocol.TunnelTypeTCP {
+		headerStyle := lipgloss.NewStyle().Foreground(mutedColor).Bold(true)
+		fmt.Println(headerStyle.Render("   Requests"))
+		fmt.Println()
+	}
 }
 
 func getMethodStyle(method string) lipgloss.Style {

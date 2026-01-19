@@ -224,11 +224,11 @@ func (m TUIModel) View() string {
 	title := titleStyle.Render("Exio Tunnel Active")
 	url := urlStyle.Render(m.client.PublicURL())
 
-	requestCount, _, _, connectedAt := m.client.Stats()
+	requestCount, bytesIn, bytesOut, connectedAt := m.client.Stats()
 	uptime := time.Since(connectedAt).Round(time.Second)
 	stats := statusBarStyle.Render(fmt.Sprintf(
-		"Requests: %d | Uptime: %s",
-		requestCount, uptime,
+		"Requests: %d | In: %s | Out: %s | Uptime: %s",
+		requestCount, formatBytes(bytesIn), formatBytes(bytesOut), uptime,
 	))
 
 	header := fmt.Sprintf("%s\n%s\n%s\n", title, url, stats)
@@ -267,6 +267,26 @@ func truncatePath(path string, maxWidth int) string {
 		return path
 	}
 	return path[:maxWidth-3] + "..."
+}
+
+// formatBytes formats a byte count as a human-readable string.
+func formatBytes(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.1fGB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.1fMB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.1fKB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%dB", bytes)
+	}
 }
 
 // RunTUI starts the TUI for the client.

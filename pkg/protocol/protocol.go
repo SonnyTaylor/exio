@@ -30,6 +30,21 @@ const (
 
 	// SubdomainQueryParam is the query parameter for requesting a subdomain.
 	SubdomainQueryParam = "subdomain"
+
+	// TunnelTypeQueryParam is the query parameter for specifying tunnel type.
+	TunnelTypeQueryParam = "type"
+
+	// TunnelTypeHTTP is the tunnel type for HTTP traffic.
+	TunnelTypeHTTP = "http"
+
+	// TunnelTypeTCP is the tunnel type for raw TCP traffic.
+	TunnelTypeTCP = "tcp"
+
+	// DefaultTCPPortStart is the default start of the TCP port allocation range.
+	DefaultTCPPortStart = 10000
+
+	// DefaultTCPPortEnd is the default end of the TCP port allocation range.
+	DefaultTCPPortEnd = 20000
 )
 
 // ConnectRequest represents the parameters for establishing a tunnel connection.
@@ -40,10 +55,12 @@ type ConnectRequest struct {
 
 // ConnectResponse is sent back to the client after connection establishment.
 type ConnectResponse struct {
-	Success   bool   `json:"success"`
-	Subdomain string `json:"subdomain,omitempty"`
-	PublicURL string `json:"public_url,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Success    bool   `json:"success"`
+	Subdomain  string `json:"subdomain,omitempty"`
+	PublicURL  string `json:"public_url,omitempty"`
+	Error      string `json:"error,omitempty"`
+	TunnelType string `json:"tunnel_type,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"` // For TCP tunnels
 }
 
 // TunnelInfo contains metadata about an active tunnel session.

@@ -4,6 +4,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +32,8 @@ type Config struct {
 	LocalPort   int
 	LocalHost   string
 	RewriteHost bool
+	TunnelType  string // "http" or "tcp"
+	BasicAuth   string // "user:pass" for HTTP basic auth protection
 }
 
 // ServerConfig holds the server's configuration returned from /_config endpoint.
@@ -46,6 +50,7 @@ type Client struct {
 	session       *transport.Session
 	logger        *log.Logger
 	publicURL     string
+	remotePort    int // For TCP tunnels
 	requestCount  atomic.Int64
 	bytesIn       atomic.Int64
 	bytesOut      atomic.Int64
@@ -164,6 +169,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	serverURL.Path = protocol.ConnectPath
 	q := serverURL.Query()
 	q.Set(protocol.SubdomainQueryParam, c.config.Subdomain)
+
+	// Set tunnel type (default to HTTP)
+	tunnelType := c.config.TunnelType
+	if tunnelType == "" {
+		tunnelType = protocol.TunnelTypeHTTP
+	}
+	q.Set(protocol.TunnelTypeQueryParam, tunnelType)
 	serverURL.RawQuery = q.Encode()
 
 	c.logger.Printf("Connecting to %s", serverURL.String())
@@ -178,12 +190,14 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	// Connect with exponential backoff
 	var wsConn *websocket.Conn
+	var wsResp *http.Response
 	delay := protocol.InitialReconnectDelay
 
 	for {
 		var resp *http.Response
 		wsConn, resp, err = dialer.DialContext(ctx, serverURL.String(), header)
 		if err == nil {
+			wsResp = resp
 			break
 		}
 
@@ -195,6 +209,8 @@ func (c *Client) Connect(ctx context.Context) error {
 				return fmt.Errorf("subdomain '%s' is already in use", c.config.Subdomain)
 			case http.StatusBadRequest:
 				return fmt.Errorf("invalid subdomain format")
+			case http.StatusServiceUnavailable:
+				return fmt.Errorf("no available TCP ports on server")
 			}
 		}
 
@@ -213,6 +229,15 @@ func (c *Client) Connect(ctx context.Context) error {
 		}
 	}
 
+	// For TCP tunnels, get the assigned port from response headers
+	var tcpPort int
+	if tunnelType == protocol.TunnelTypeTCP && wsResp != nil {
+		portStr := wsResp.Header.Get("X-Exio-TCP-Port")
+		if portStr != "" {
+			fmt.Sscanf(portStr, "%d", &tcpPort)
+		}
+	}
+
 	// Create yamux session
 	session, err := transport.NewClientSession(wsConn, c.config.Subdomain)
 	if err != nil {
@@ -223,10 +248,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	c.session = session
 	c.connectedAt = time.Now()
+	c.remotePort = tcpPort
 	c.mu.Unlock()
 
-	// Build public URL based on server's routing mode
-	if c.serverConfig.RoutingMode == protocol.RoutingModePath {
+	// Build public URL based on tunnel type and server's routing mode
+	if tunnelType == protocol.TunnelTypeTCP {
+		c.publicURL = fmt.Sprintf("tcp://%s:%d", c.serverConfig.BaseDomain, tcpPort)
+	} else if c.serverConfig.RoutingMode == protocol.RoutingModePath {
 		c.publicURL = fmt.Sprintf("https://%s/%s/", c.serverConfig.BaseDomain, c.config.Subdomain)
 	} else {
 		c.publicURL = fmt.Sprintf("https://%s.%s", c.config.Subdomain, c.serverConfig.BaseDomain)
@@ -259,6 +287,9 @@ func (c *Client) Run(ctx context.Context) error {
 	c.wg.Add(1)
 	go c.heartbeat()
 
+	// Determine if we're handling TCP or HTTP
+	isTCP := c.config.TunnelType == protocol.TunnelTypeTCP
+
 	// Accept incoming streams
 	for {
 		stream, err := session.AcceptStream()
@@ -277,7 +308,11 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		c.wg.Add(1)
-		go c.handleStream(stream)
+		if isTCP {
+			go c.handleTCPStream(stream)
+		} else {
+			go c.handleStream(stream)
+		}
 	}
 
 	// Wait for all handlers to complete with a timeout
@@ -340,6 +375,14 @@ func (c *Client) handleStream(stream net.Conn) {
 	// Log the request (unless quiet mode is enabled)
 	if !c.quietMode {
 		c.logger.Printf("%s %s", req.Method, req.URL.Path)
+	}
+
+	// Validate Basic Auth if configured
+	if c.config.BasicAuth != "" {
+		if !c.validateBasicAuth(req) {
+			c.sendUnauthorizedResponse(stream)
+			return
+		}
 	}
 
 	// Rewrite the Host header if configured
@@ -409,8 +452,11 @@ func (c *Client) handleStream(stream net.Conn) {
 	}
 	defer resp.Body.Close()
 
+	// Wrap stream with counting writer to track bytes out
+	countingStream := NewCountingWriter(stream, &c.bytesOut)
+
 	// Write the response back to the stream
-	if err := resp.Write(stream); err != nil {
+	if err := resp.Write(countingStream); err != nil {
 		select {
 		case <-c.ctx.Done():
 			return
@@ -423,6 +469,11 @@ func (c *Client) handleStream(stream net.Conn) {
 	duration := time.Since(startTime)
 	c.requestCount.Add(1)
 
+	// Track request bytes (approximate - based on content length if available)
+	if req.ContentLength > 0 {
+		c.bytesIn.Add(req.ContentLength)
+	}
+
 	// Notify UI of request
 	if c.OnRequest != nil {
 		c.OnRequest(protocol.RequestLog{
@@ -431,8 +482,72 @@ func (c *Client) handleStream(stream net.Conn) {
 			Path:       req.URL.Path,
 			StatusCode: resp.StatusCode,
 			Duration:   duration,
+			BytesOut:   resp.ContentLength,
 		})
 	}
+}
+
+// handleTCPStream handles an incoming TCP stream from the server (raw bridging).
+func (c *Client) handleTCPStream(stream net.Conn) {
+	defer c.wg.Done()
+	defer stream.Close()
+
+	// Track this stream for graceful shutdown
+	c.trackConn(stream)
+	defer c.untrackConn(stream)
+
+	// Check if we're shutting down
+	select {
+	case <-c.ctx.Done():
+		return
+	default:
+	}
+
+	// Connect to the local service
+	localAddr := net.JoinHostPort(c.config.LocalHost, fmt.Sprintf("%d", c.config.LocalPort))
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	localConn, err := dialer.DialContext(c.ctx, "tcp", localAddr)
+	if err != nil {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to connect to local service: %v", err)
+			return
+		}
+	}
+	defer localConn.Close()
+
+	// Track local connection for graceful shutdown
+	c.trackConn(localConn)
+	defer c.untrackConn(localConn)
+
+	c.requestCount.Add(1)
+
+	// Log the connection (unless quiet mode)
+	if !c.quietMode {
+		c.logger.Printf("TCP connection bridged to %s", localAddr)
+	}
+
+	// Bidirectional copy
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Stream -> Local
+	go func() {
+		defer wg.Done()
+		written, _ := io.Copy(localConn, stream)
+		c.bytesIn.Add(written)
+	}()
+
+	// Local -> Stream
+	go func() {
+		defer wg.Done()
+		written, _ := io.Copy(stream, localConn)
+		c.bytesOut.Add(written)
+	}()
+
+	wg.Wait()
 }
 
 // sendErrorResponse sends an HTTP error response to the stream.
@@ -448,6 +563,42 @@ func (c *Client) sendErrorResponse(stream net.Conn, statusCode int, message stri
 	resp.Header.Set("Content-Type", "text/plain")
 	resp.Write(stream)
 	stream.Write([]byte(message))
+}
+
+// validateBasicAuth checks if the request has valid Basic Auth credentials.
+func (c *Client) validateBasicAuth(req *http.Request) bool {
+	authHeader := req.Header.Get("Authorization")
+	if authHeader == "" {
+		return false
+	}
+
+	if !strings.HasPrefix(authHeader, "Basic ") {
+		return false
+	}
+
+	encoded := strings.TrimPrefix(authHeader, "Basic ")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return false
+	}
+
+	return string(decoded) == c.config.BasicAuth
+}
+
+// sendUnauthorizedResponse sends a 401 Unauthorized response with WWW-Authenticate header.
+func (c *Client) sendUnauthorizedResponse(stream net.Conn) {
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Status:     http.StatusText(http.StatusUnauthorized),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+	}
+	resp.Header.Set("Content-Type", "text/plain")
+	resp.Header.Set("WWW-Authenticate", `Basic realm="Exio Tunnel"`)
+	resp.Write(stream)
+	stream.Write([]byte("Unauthorized"))
 }
 
 // heartbeat sends periodic pings to keep the connection alive.

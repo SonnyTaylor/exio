@@ -43,7 +43,7 @@ func TestValidateSubdomain(t *testing.T) {
 }
 
 func TestSessionRegistry_RegisterAndGet(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	// Test registration with nil session (for unit testing - real usage would have actual session)
 	// We can't fully test without a real transport.Session, but we can test the map logic
@@ -69,7 +69,7 @@ func TestSessionRegistry_RegisterAndGet(t *testing.T) {
 }
 
 func TestSessionRegistry_SubdomainCollision(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	// First registration should succeed (with nil session for testing)
 	err := registry.Register("myapp", nil)
@@ -91,7 +91,7 @@ func TestSessionRegistry_SubdomainCollision(t *testing.T) {
 }
 
 func TestSessionRegistry_Unregister(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	// Register
 	registry.Register("myapp", nil)
@@ -113,7 +113,7 @@ func TestSessionRegistry_Unregister(t *testing.T) {
 }
 
 func TestSessionRegistry_UnregisterNonExistent(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	// Should not panic or change count
 	registry.Unregister("nonexistent")
@@ -123,7 +123,7 @@ func TestSessionRegistry_UnregisterNonExistent(t *testing.T) {
 }
 
 func TestSessionRegistry_ForEach(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	// Register multiple
 	registry.Register("app1", nil)
@@ -154,7 +154,7 @@ func TestSessionRegistry_ForEach(t *testing.T) {
 }
 
 func TestSessionRegistry_ConcurrentAccess(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 	var wg sync.WaitGroup
 
 	// Concurrent registrations
@@ -176,7 +176,7 @@ func TestSessionRegistry_ConcurrentAccess(t *testing.T) {
 }
 
 func TestSessionRegistry_InvalidSubdomains(t *testing.T) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	invalidSubdomains := []string{
 		"ab",        // too short
@@ -195,7 +195,7 @@ func TestSessionRegistry_InvalidSubdomains(t *testing.T) {
 }
 
 func BenchmarkRegistry_Register(b *testing.B) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -205,7 +205,7 @@ func BenchmarkRegistry_Register(b *testing.B) {
 }
 
 func BenchmarkRegistry_Get(b *testing.B) {
-	registry := NewSessionRegistry()
+	registry := NewSessionRegistry(0, 0)
 	registry.Register("testapp", nil)
 
 	b.ResetTimer()
