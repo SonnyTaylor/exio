@@ -1,0 +1,43 @@
+[Unit]
+Description=Exio Tunneling Server Daemon
+Documentation=https://github.com/sonnytaylor/exio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exio
+Group=exio
+
+# Environment configuration (Twelve-Factor App methodology)
+EnvironmentFile=-/etc/exio/exiod.env
+
+# The server binary
+ExecStart=/usr/local/bin/exiod
+
+# Restart configuration
+Restart=on-failure
+RestartSec=5s
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exiod
+
+[Install]
+WantedBy=multi-user.target
