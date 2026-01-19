@@ -4,30 +4,71 @@
 
 Exio is a developer tool that creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
 
+[![CI](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml/badge.svg)](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SonnyTaylor/exio)](https://github.com/SonnyTaylor/exio/releases)
+[![License](https://img.shields.io/github/license/SonnyTaylor/exio)](LICENSE)
+
 ## Features
 
 - **WebSocket-based transport** - Reliably traverses NATs, firewalls, and proxies
 - **Yamux multiplexing** - Multiple concurrent HTTP requests over a single connection
 - **Automatic Host rewriting** - Works with development servers that have DNS rebinding protection
 - **PSK authentication** - Simple shared-secret authentication model
+- **Interactive TUI** - Real-time request inspection with `--tui` flag
 - **Cloudflare-ready** - Designed to sit behind Cloudflare Tunnel for production deployments
+
+## Installation
+
+### Quick Install (Recommended)
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/SonnyTaylor/exio/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/SonnyTaylor/exio/main/install.ps1 | iex
+```
+
+### From Source
+
+```bash
+git clone https://github.com/SonnyTaylor/exio.git
+cd exio
+make build
+```
+
+### Pre-built Binaries
+
+Download from the [Releases](https://github.com/SonnyTaylor/exio/releases) page.
 
 ## Quick Start
 
-### Client Usage
+### 1. Configure (First Time)
 
 ```bash
-# Expose local port 3000 to the internet
+exio init
+```
+
+This interactive wizard will prompt you for your server URL and authentication token, saving the configuration to `~/.exio.yaml`.
+
+### 2. Expose Your Service
+
+```bash
+# Expose local port 3000
 exio http 3000
 
 # Request a specific subdomain
 exio http 3000 --subdomain my-app
 
-# Forward to a different local host
-exio http 8080 --host 192.168.1.100
+# With real-time request viewer
+exio http 3000 --tui
 ```
 
-### Environment Configuration
+### Manual Configuration
+
+Alternatively, configure via environment variables:
 
 ```bash
 # Client configuration
@@ -39,26 +80,6 @@ export EXIO_PORT=8080
 export EXIO_TOKEN=your-secret-token
 export EXIO_BASE_DOMAIN=dev.example.com
 ```
-
-## Installation
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/sonnytaylor/exio.git
-cd exio
-
-# Build client
-go build -o exio ./cmd/exio
-
-# Build server
-go build -o exiod ./cmd/exiod
-```
-
-### Pre-built Binaries
-
-Download from the [Releases](https://github.com/sonnytaylor/exio/releases) page.
 
 ## Architecture
 
@@ -172,6 +193,15 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 | `--subdomain` | - | Requested subdomain |
 | `--host` | - | Local host to forward to (default: 127.0.0.1) |
 | `--no-rewrite-host` | - | Don't rewrite Host header |
+| `--tui` | - | Enable interactive request viewer |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `exio init` | Interactive setup wizard |
+| `exio http <port>` | Expose local HTTP service |
+| `exio version` | Show version information |
 
 ### Server (exiod)
 

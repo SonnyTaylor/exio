@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build all platforms
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          mkdir -p dist
+          
+          # Build with version info
+          LDFLAGS="-X main.version=${VERSION}"
+          
+          # Linux amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exio-linux-amd64 ./cmd/exio
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exiod-linux-amd64 ./cmd/exiod
+          
+          # Linux arm64
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exio-linux-arm64 ./cmd/exio
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exiod-linux-arm64 ./cmd/exiod
+          
+          # macOS amd64
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exio-darwin-amd64 ./cmd/exio
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exiod-darwin-amd64 ./cmd/exiod
+          
+          # macOS arm64 (Apple Silicon)
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exio-darwin-arm64 ./cmd/exio
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exiod-darwin-arm64 ./cmd/exiod
+          
+          # Windows amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exio-windows-amd64.exe ./cmd/exio
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/exiod-windows-amd64.exe ./cmd/exiod
+          
+          # Windows arm64
+          GOOS=windows GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exio-windows-arm64.exe ./cmd/exio
+          GOOS=windows GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/exiod-windows-arm64.exe ./cmd/exiod
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create archives
+        run: |
+          cd dist
+          
+          # Create tar.gz for Unix systems
+          for bin in exio-linux-amd64 exio-linux-arm64 exio-darwin-amd64 exio-darwin-arm64 \
+                     exiod-linux-amd64 exiod-linux-arm64 exiod-darwin-amd64 exiod-darwin-arm64; do
+            tar -czvf "${bin}.tar.gz" "$bin"
+          done
+          
+          # Create zip for Windows
+          for bin in exio-windows-amd64.exe exio-windows-arm64.exe \
+                     exiod-windows-amd64.exe exiod-windows-arm64.exe; do
+            zip "${bin%.exe}.zip" "$bin"
+          done
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -n "$PREV_TAG" ]; then
+            echo "## Changes since $PREV_TAG" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"- %s (%h)" "$PREV_TAG"..HEAD >> CHANGELOG.md
+          else
+            echo "## Initial Release" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "First release of Exio tunneling system." >> CHANGELOG.md
+          fi
+          
+          cat CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ steps.version.outputs.VERSION }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
