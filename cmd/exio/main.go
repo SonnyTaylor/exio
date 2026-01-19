@@ -8,11 +8,14 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/sonnytaylor/exio/internal/client"
+	"github.com/sonnytaylor/exio/pkg/protocol"
 )
 
 var (
@@ -147,6 +150,9 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// Check if TUI mode is enabled
+	useTUI := viper.GetBool("tui")
+
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,18 +162,28 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 
 	go func() {
 		<-sigChan
-		fmt.Println("\nShutting down...")
+		if !useTUI {
+			// Print a clean shutdown message
+			fmt.Println()
+			shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
+			fmt.Println(shutdownStyle.Render("   ⏹  Shutting down tunnel..."))
+		}
 		cancel()
 		c.Close()
 	}()
+
+	// In non-TUI mode, enable quiet mode and show a connecting spinner
+	if !useTUI {
+		c.SetQuietMode(true)
+		connectingStyle := lipgloss.NewStyle().Foreground(mutedColor).Italic(true)
+		fmt.Println()
+		fmt.Println(connectingStyle.Render("   Connecting to server..."))
+	}
 
 	// Connect
 	if err := c.Connect(ctx); err != nil {
 		return fmt.Errorf("connection failed: %w", err)
 	}
-
-	// Check if TUI mode is enabled
-	useTUI := viper.GetBool("tui")
 
 	if useTUI {
 		// Run with interactive TUI
@@ -178,20 +194,231 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	// Print connection info (non-TUI mode)
 	printConnectionInfo(c)
 
+	// Set up styled request logging callback
+	c.OnRequest = func(log protocol.RequestLog) {
+		printRequest(log)
+	}
+
 	// Run and handle traffic
 	return c.Run(ctx)
 }
 
+// UI Styles
+var (
+	// Colors
+	primaryColor   = lipgloss.Color("#7C3AED") // Purple
+	accentColor    = lipgloss.Color("#10B981") // Green
+	mutedColor     = lipgloss.Color("#6B7280") // Gray
+	successColor   = lipgloss.Color("#10B981") // Green
+	warningColor   = lipgloss.Color("#F59E0B") // Amber
+	errorColor     = lipgloss.Color("#EF4444") // Red
+	infoColor      = lipgloss.Color("#3B82F6") // Blue
+
+	// Logo/Brand
+	logoStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(primaryColor)
+
+	// Main container
+	containerStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(1, 2).
+			MarginTop(1).
+			MarginBottom(1)
+
+	// Title
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(primaryColor).
+			Padding(0, 2).
+			MarginBottom(1)
+
+	// URL display
+	urlLabelStyle = lipgloss.NewStyle().
+			Foreground(mutedColor)
+
+	urlValueStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(accentColor)
+
+	// Status indicator
+	statusDotStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+
+	statusTextStyle = lipgloss.NewStyle().
+			Foreground(accentColor)
+
+	// Forward info
+	forwardStyle = lipgloss.NewStyle().
+			Foreground(mutedColor)
+
+	// Help text
+	helpTextStyle = lipgloss.NewStyle().
+			Foreground(mutedColor).
+			Italic(true).
+			MarginTop(1)
+
+	// Request log styles
+	timeStyle = lipgloss.NewStyle().
+			Foreground(mutedColor).
+			Width(10)
+
+	methodGetStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(successColor).
+			Width(7)
+
+	methodPostStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(warningColor).
+			Width(7)
+
+	methodPutStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(infoColor).
+			Width(7)
+
+	methodDeleteStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(errorColor).
+			Width(7)
+
+	methodPatchStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#8B5CF6")).
+			Width(7)
+
+	methodDefaultStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(mutedColor).
+			Width(7)
+
+	pathLogStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#D1D5DB"))
+
+	statusSuccessStyle = lipgloss.NewStyle().
+			Foreground(successColor)
+
+	statusRedirectStyle = lipgloss.NewStyle().
+			Foreground(infoColor)
+
+	statusClientErrStyle = lipgloss.NewStyle().
+			Foreground(warningColor)
+
+	statusServerErrStyle = lipgloss.NewStyle().
+			Foreground(errorColor)
+
+	durationLogStyle = lipgloss.NewStyle().
+			Foreground(mutedColor)
+
+	arrowStyle = lipgloss.NewStyle().
+			Foreground(primaryColor)
+)
+
 func printConnectionInfo(c *client.Client) {
+	// Logo
+	logo := logoStyle.Render(`
+   ███████╗██╗  ██╗██╗ ██████╗ 
+   ██╔════╝╚██╗██╔╝██║██╔═══██╗
+   █████╗   ╚███╔╝ ██║██║   ██║
+   ██╔══╝   ██╔██╗ ██║██║   ██║
+   ███████╗██╔╝ ██╗██║╚██████╔╝
+   ╚══════╝╚═╝  ╚═╝╚═╝ ╚═════╝`)
+
+	fmt.Println(logo)
+
+	// Status line
+	statusDot := statusDotStyle.Render("●")
+	statusText := statusTextStyle.Render("Tunnel Active")
+	statusLine := fmt.Sprintf("   %s %s", statusDot, statusText)
+	fmt.Println(statusLine)
 	fmt.Println()
-	fmt.Println("╭──────────────────────────────────────────────────────────────╮")
-	fmt.Println("│                     Exio Tunnel Active                       │")
-	fmt.Println("├──────────────────────────────────────────────────────────────┤")
-	fmt.Printf("│  Public URL: %-48s│\n", c.PublicURL())
-	fmt.Println("│                                                              │")
-	fmt.Println("│  Press Ctrl+C to stop the tunnel                             │")
-	fmt.Println("╰──────────────────────────────────────────────────────────────╯")
+
+	// URL section
+	urlLabel := urlLabelStyle.Render("   Public URL")
+	fmt.Println(urlLabel)
+	urlArrow := arrowStyle.Render("   →")
+	urlValue := urlValueStyle.Render(c.PublicURL())
+	fmt.Printf("%s %s\n", urlArrow, urlValue)
 	fmt.Println()
+
+	// Forward info
+	forwardLabel := forwardStyle.Render("   Forwarding to")
+	fmt.Println(forwardLabel)
+	forwardArrow := arrowStyle.Render("   →")
+	localAddr := forwardStyle.Render(fmt.Sprintf("%s:%d", c.Config().LocalHost, c.Config().LocalPort))
+	fmt.Printf("%s %s\n", forwardArrow, localAddr)
+	fmt.Println()
+
+	// Divider
+	divider := lipgloss.NewStyle().Foreground(mutedColor).Render("   " + "─────────────────────────────────────────────────")
+	fmt.Println(divider)
+	fmt.Println()
+
+	// Help
+	helpText := helpTextStyle.Render("   Press Ctrl+C to stop the tunnel")
+	fmt.Println(helpText)
+	fmt.Println()
+
+	// Request log header
+	headerStyle := lipgloss.NewStyle().Foreground(mutedColor).Bold(true)
+	fmt.Println(headerStyle.Render("   Requests"))
+	fmt.Println()
+}
+
+func getMethodStyle(method string) lipgloss.Style {
+	switch method {
+	case "GET":
+		return methodGetStyle
+	case "POST":
+		return methodPostStyle
+	case "PUT":
+		return methodPutStyle
+	case "DELETE":
+		return methodDeleteStyle
+	case "PATCH":
+		return methodPatchStyle
+	default:
+		return methodDefaultStyle
+	}
+}
+
+func getStatusStyle(code int) lipgloss.Style {
+	switch {
+	case code >= 200 && code < 300:
+		return statusSuccessStyle
+	case code >= 300 && code < 400:
+		return statusRedirectStyle
+	case code >= 400 && code < 500:
+		return statusClientErrStyle
+	case code >= 500:
+		return statusServerErrStyle
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return fmt.Sprintf("%dµs", d.Microseconds())
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+func printRequest(log protocol.RequestLog) {
+	timestamp := timeStyle.Render(log.Timestamp.Format("15:04:05"))
+	method := getMethodStyle(log.Method).Render(log.Method)
+	path := pathLogStyle.Render(log.Path)
+	status := getStatusStyle(log.StatusCode).Render(fmt.Sprintf("%d", log.StatusCode))
+	duration := durationLogStyle.Render(formatDuration(log.Duration))
+
+	fmt.Printf("   %s  %s %s %s %s\n", timestamp, method, status, duration, path)
 }
 
 // generateSubdomain generates a random subdomain.

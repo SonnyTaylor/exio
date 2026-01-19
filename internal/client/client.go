@@ -54,6 +54,7 @@ type Client struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	mu            sync.RWMutex
+	quietMode     bool
 
 	// Callbacks for UI updates
 	OnConnect    func(publicURL string)
@@ -226,9 +227,11 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.publicURL = fmt.Sprintf("https://%s.%s", c.config.Subdomain, c.serverConfig.BaseDomain)
 	}
 
-	c.logger.Printf("Tunnel established!")
-	c.logger.Printf("Public URL: %s", c.publicURL)
-	c.logger.Printf("Forwarding to: %s:%d", c.config.LocalHost, c.config.LocalPort)
+	if !c.quietMode {
+		c.logger.Printf("Tunnel established!")
+		c.logger.Printf("Public URL: %s", c.publicURL)
+		c.logger.Printf("Forwarding to: %s:%d", c.config.LocalHost, c.config.LocalPort)
+	}
 
 	if c.OnConnect != nil {
 		c.OnConnect(c.publicURL)
@@ -290,8 +293,10 @@ func (c *Client) handleStream(stream net.Conn) {
 		return
 	}
 
-	// Log the request
-	c.logger.Printf("%s %s", req.Method, req.URL.Path)
+	// Log the request (unless quiet mode is enabled)
+	if !c.quietMode {
+		c.logger.Printf("%s %s", req.Method, req.URL.Path)
+	}
 
 	// Rewrite the Host header if configured
 	originalHost := req.Host
@@ -418,6 +423,16 @@ func (c *Client) Close() error {
 // PublicURL returns the public URL of the tunnel.
 func (c *Client) PublicURL() string {
 	return c.publicURL
+}
+
+// Config returns the client configuration.
+func (c *Client) Config() *Config {
+	return c.config
+}
+
+// SetQuietMode enables or disables quiet mode (suppresses default log output).
+func (c *Client) SetQuietMode(quiet bool) {
+	c.quietMode = quiet
 }
 
 // Stats returns tunnel statistics.
