@@ -152,14 +152,19 @@ func NewServerSession(wsConn *websocket.Conn, subdomain string) (*Session, error
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{
+	s := &Session{
 		yamuxSession: yamuxSession,
 		wsConn:       wsConn,
 		subdomain:    subdomain,
 		connectedAt:  time.Now(),
 		ctx:          ctx,
 		cancel:       cancel,
-	}, nil
+	}
+
+	// Monitor yamux session for unexpected closure (e.g., client disconnect)
+	go s.monitorSession()
+
+	return s, nil
 }
 
 // NewClientSession creates a new client-side session from a WebSocket connection.
@@ -171,14 +176,19 @@ func NewClientSession(wsConn *websocket.Conn, subdomain string) (*Session, error
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Session{
+	s := &Session{
 		yamuxSession: yamuxSession,
 		wsConn:       wsConn,
 		subdomain:    subdomain,
 		connectedAt:  time.Now(),
 		ctx:          ctx,
 		cancel:       cancel,
-	}, nil
+	}
+
+	// Monitor yamux session for unexpected closure (e.g., server disconnect)
+	go s.monitorSession()
+
+	return s, nil
 }
 
 // OpenStream opens a new multiplexed stream (server -> client).
@@ -255,4 +265,19 @@ func (s *Session) Context() context.Context {
 // NumStreams returns the number of active streams.
 func (s *Session) NumStreams() int {
 	return s.yamuxSession.NumStreams()
+}
+
+// monitorSession watches for yamux session closure and cancels the context.
+// This ensures cleanup happens when the connection drops unexpectedly.
+func (s *Session) monitorSession() {
+	// yamux's CloseChan() returns a channel that closes when the session ends
+	<-s.yamuxSession.CloseChan()
+
+	// Mark as closed and cancel context to trigger cleanup
+	s.closeMu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.cancel()
+	}
+	s.closeMu.Unlock()
 }
