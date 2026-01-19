@@ -128,3 +128,53 @@ func itoa(i int) string {
 
 	return string(b[n:])
 }
+
+// Routing mode constants
+const (
+	RoutingModePath      = "path"
+	RoutingModeSubdomain = "subdomain"
+)
+
+// ExtractTunnelIDFromPath extracts the tunnel ID from the first path segment.
+// For example, "/bold-owl-716/api/users" returns "bold-owl-716".
+// Returns empty string if path is empty or has no tunnel ID segment.
+func ExtractTunnelIDFromPath(path string) string {
+	// Remove leading slash
+	if len(path) > 0 && path[0] == '/' {
+		path = path[1:]
+	}
+
+	if path == "" {
+		return ""
+	}
+
+	// Find the end of the first segment
+	end := 0
+	for end < len(path) && path[end] != '/' {
+		end++
+	}
+
+	return path[:end]
+}
+
+// StripTunnelIDPrefix removes the tunnel ID prefix from a path.
+// For example, "/bold-owl-716/api/users" becomes "/api/users".
+// If the path only contains the tunnel ID (e.g., "/bold-owl-716"), returns "/".
+func StripTunnelIDPrefix(path, tunnelID string) string {
+	if tunnelID == "" {
+		return path
+	}
+
+	prefix := "/" + tunnelID
+	if len(path) >= len(prefix) && path[:len(prefix)] == prefix {
+		remaining := path[len(prefix):]
+		if remaining == "" || remaining[0] == '/' {
+			if remaining == "" {
+				return "/"
+			}
+			return remaining
+		}
+	}
+
+	return path
+}

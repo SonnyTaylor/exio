@@ -4,7 +4,9 @@ package client
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -30,9 +32,16 @@ type Config struct {
 	RewriteHost bool
 }
 
+// ServerConfig holds the server's configuration returned from /_config endpoint.
+type ServerConfig struct {
+	RoutingMode string `json:"routing_mode"`
+	BaseDomain  string `json:"base_domain"`
+}
+
 // Client is the Exio tunneling client (exio).
 type Client struct {
 	config        *Config
+	serverConfig  *ServerConfig
 	authenticator *auth.Authenticator
 	session       *transport.Session
 	logger        *log.Logger
@@ -74,8 +83,64 @@ func New(config *Config) (*Client, error) {
 	}, nil
 }
 
+// fetchServerConfig queries the server's /_config endpoint to get routing mode.
+func (c *Client) fetchServerConfig(ctx context.Context) error {
+	configURL, err := url.Parse(c.config.ServerURL)
+	if err != nil {
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
+
+	configURL.Path = "/_config"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", configURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create config request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		// If we can't reach the config endpoint, assume subdomain mode for backward compatibility
+		c.logger.Printf("Warning: Could not fetch server config, assuming subdomain mode: %v", err)
+		c.serverConfig = &ServerConfig{
+			RoutingMode: protocol.RoutingModeSubdomain,
+			BaseDomain:  extractBaseDomain(c.config.ServerURL),
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Older servers may not have /_config endpoint
+		c.logger.Printf("Warning: Server config endpoint returned %d, assuming subdomain mode", resp.StatusCode)
+		c.serverConfig = &ServerConfig{
+			RoutingMode: protocol.RoutingModeSubdomain,
+			BaseDomain:  extractBaseDomain(c.config.ServerURL),
+		}
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read config response: %w", err)
+	}
+
+	var serverConfig ServerConfig
+	if err := json.Unmarshal(body, &serverConfig); err != nil {
+		return fmt.Errorf("failed to parse config response: %w", err)
+	}
+
+	c.serverConfig = &serverConfig
+	return nil
+}
+
 // Connect establishes a tunnel connection to the server.
 func (c *Client) Connect(ctx context.Context) error {
+	// First, fetch server configuration to determine routing mode
+	if err := c.fetchServerConfig(ctx); err != nil {
+		return fmt.Errorf("failed to fetch server config: %w", err)
+	}
+
 	// Build the WebSocket URL
 	serverURL, err := url.Parse(c.config.ServerURL)
 	if err != nil {
@@ -154,9 +219,12 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.connectedAt = time.Now()
 	c.mu.Unlock()
 
-	// Build public URL (assume https and the server's base domain)
-	// The actual URL depends on the server configuration
-	c.publicURL = fmt.Sprintf("https://%s.%s", c.config.Subdomain, extractBaseDomain(c.config.ServerURL))
+	// Build public URL based on server's routing mode
+	if c.serverConfig.RoutingMode == protocol.RoutingModePath {
+		c.publicURL = fmt.Sprintf("https://%s/%s/", c.serverConfig.BaseDomain, c.config.Subdomain)
+	} else {
+		c.publicURL = fmt.Sprintf("https://%s.%s", c.config.Subdomain, c.serverConfig.BaseDomain)
+	}
 
 	c.logger.Printf("Tunnel established!")
 	c.logger.Printf("Public URL: %s", c.publicURL)

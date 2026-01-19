@@ -52,8 +52,13 @@ EXIO_PORT=8080
 # openssl rand -hex 32
 EXIO_TOKEN=your-secret-token-here
 
-# Base domain for tunnel subdomains
-EXIO_BASE_DOMAIN=dev.example.com
+# Base domain for tunnel URLs
+EXIO_BASE_DOMAIN=tunnel.example.com
+
+# Routing mode: "path" (default) or "subdomain"
+# - path: URLs like https://tunnel.example.com/my-app/
+# - subdomain: URLs like https://my-app.tunnel.example.com
+EXIO_ROUTING_MODE=path
 EOF
 
 # Secure the config file
@@ -131,13 +136,32 @@ cloudflared tunnel create exio
 
 Create `/etc/cloudflared/config.yml`:
 
+**For path-based routing (recommended):**
+
+```yaml
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # Single hostname for path-based routing
+  - hostname: "tunnel.example.com"
+    service: http://localhost:8080
+  # Catch-all (required)
+  - service: http_status:404
+```
+
+**For subdomain-based routing:**
+
 ```yaml
 tunnel: <TUNNEL_ID>
 credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
 
 ingress:
   # Wildcard for all subdomains
-  - hostname: "*.dev.example.com"
+  - hostname: "*.tunnel.example.com"
+    service: http://localhost:8080
+  # Base domain for control plane
+  - hostname: "tunnel.example.com"
     service: http://localhost:8080
   # Catch-all (required)
   - service: http_status:404
@@ -146,11 +170,22 @@ ingress:
 ### 5. Configure DNS
 
 In Cloudflare Dashboard:
+
+**For path-based routing (recommended):**
 1. Go to DNS settings
 2. Add CNAME record:
-   - Name: `*.dev` (or your subdomain)
+   - Name: `tunnel`
    - Target: `<TUNNEL_ID>.cfargotunnel.com`
    - Proxy status: Proxied
+
+This is covered by Cloudflare's free Universal SSL certificate.
+
+**For subdomain-based routing:**
+1. Go to DNS settings
+2. Add CNAME records:
+   - Name: `tunnel`, Target: `<TUNNEL_ID>.cfargotunnel.com`, Proxied
+   - Name: `*.tunnel`, Target: `<TUNNEL_ID>.cfargotunnel.com`, Proxied
+3. Enable Advanced Certificate Manager in SSL/TLS settings to get a certificate for `*.tunnel.example.com`
 
 ### 6. Run cloudflared as Service
 

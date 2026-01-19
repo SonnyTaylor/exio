@@ -16,6 +16,7 @@ Exio is a developer tool that creates secure tunnels from your local machine to 
 - **PSK authentication** - Simple shared-secret authentication model
 - **Interactive TUI** - Real-time request inspection with `--tui` flag
 - **Cloudflare-ready** - Designed to sit behind Cloudflare Tunnel for production deployments
+- **Flexible routing** - Path-based (`tunnel.example.com/id/`) or subdomain-based (`id.tunnel.example.com`) routing
 
 ## Installation
 
@@ -59,12 +60,16 @@ This interactive wizard will prompt you for your server URL and authentication t
 # Expose local port 3000
 exio http 3000
 
-# Request a specific subdomain
+# Request a specific tunnel ID
 exio http 3000 --subdomain my-app
 
 # With real-time request viewer
 exio http 3000 --tui
 ```
+
+Your service will be available at a URL like:
+- **Path mode (default)**: `https://tunnel.example.com/my-app/`
+- **Subdomain mode**: `https://my-app.tunnel.example.com`
 
 ### Manual Configuration
 
@@ -152,10 +157,20 @@ sudo systemctl start exiod
 
 ### Cloudflare Tunnel Configuration
 
+**For path-based routing (recommended):**
 1. Create a Cloudflare Tunnel in your Zero Trust dashboard
-2. Configure public hostname: `*.dev.example.com`
+2. Configure public hostname: `tunnel.example.com`
 3. Set service: `http://localhost:8080`
-4. The tunnel handles SSL termination; Exio receives plain HTTP
+4. Add a single DNS CNAME record for `tunnel` pointing to your tunnel
+
+**For subdomain-based routing:**
+1. Create a Cloudflare Tunnel in your Zero Trust dashboard
+2. Configure public hostname: `*.tunnel.example.com`
+3. Set service: `http://localhost:8080`
+4. Add a wildcard DNS CNAME record for `*.tunnel`
+5. Requires Cloudflare Advanced Certificate Manager for SSL on `*.tunnel.example.com`
+
+The tunnel handles SSL termination; Exio receives plain HTTP.
 
 ## Protocol Details
 
@@ -167,8 +182,20 @@ The client establishes a WebSocket connection to `/_connect` with:
 
 ### Data Plane
 
-1. Server receives HTTP request for `<subdomain>.dev.example.com`
-2. Server extracts subdomain from Host header
+**Path-based routing (default):**
+1. Server receives HTTP request for `tunnel.example.com/my-app/api/users`
+2. Server extracts tunnel ID (`my-app`) from the first path segment
+3. Server rewrites path to `/api/users` (strips tunnel ID prefix)
+4. Server looks up session in registry
+5. Server opens new Yamux stream to client
+6. Server writes modified HTTP request to stream
+7. Client reads request, forwards to local service
+8. Client writes response back to stream
+9. Server copies response to original HTTP response writer
+
+**Subdomain-based routing:**
+1. Server receives HTTP request for `my-app.tunnel.example.com/api/users`
+2. Server extracts subdomain (`my-app`) from Host header
 3. Server looks up session in registry
 4. Server opens new Yamux stream to client
 5. Server writes raw HTTP request to stream
@@ -209,7 +236,15 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 |------|-------------|-------------|
 | `--port, -p` | `EXIO_PORT` | Listening port (default: 8080) |
 | `--token, -t` | `EXIO_TOKEN` | Authentication token (required) |
-| `--domain, -d` | `EXIO_BASE_DOMAIN` | Base domain for subdomains (required) |
+| `--domain, -d` | `EXIO_BASE_DOMAIN` | Base domain for tunnel URLs (required) |
+| `--routing-mode, -r` | `EXIO_ROUTING_MODE` | Routing mode: `path` (default) or `subdomain` |
+
+### Routing Modes
+
+| Mode | URL Format | SSL Requirements |
+|------|------------|------------------|
+| `path` | `https://tunnel.example.com/my-app/` | Standard SSL (free Cloudflare) |
+| `subdomain` | `https://my-app.tunnel.example.com` | Wildcard SSL (Advanced Certificate Manager) |
 
 ## License
 

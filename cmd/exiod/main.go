@@ -45,11 +45,13 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.exiod.yaml)")
 	rootCmd.Flags().IntP("port", "p", 8080, "Server listening port")
 	rootCmd.Flags().StringP("token", "t", "", "Authentication token")
-	rootCmd.Flags().StringP("domain", "d", "", "Base domain for tunnel subdomains")
+	rootCmd.Flags().StringP("domain", "d", "", "Base domain for tunnel URLs")
+	rootCmd.Flags().StringP("routing-mode", "r", "path", "Routing mode: 'path' (tunnel.example.com/id/) or 'subdomain' (id.tunnel.example.com)")
 
 	viper.BindPFlag("port", rootCmd.Flags().Lookup("port"))
 	viper.BindPFlag("token", rootCmd.Flags().Lookup("token"))
 	viper.BindPFlag("domain", rootCmd.Flags().Lookup("domain"))
+	viper.BindPFlag("routing-mode", rootCmd.Flags().Lookup("routing-mode"))
 
 	// Add version command
 	rootCmd.AddCommand(&cobra.Command{
@@ -80,15 +82,22 @@ func initConfig() {
 	viper.BindEnv("port", "EXIO_PORT")
 	viper.BindEnv("token", "EXIO_TOKEN")
 	viper.BindEnv("domain", "EXIO_BASE_DOMAIN")
+	viper.BindEnv("routing-mode", "EXIO_ROUTING_MODE")
 
 	viper.ReadInConfig()
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
+	routingMode := viper.GetString("routing-mode")
+	if routingMode == "" {
+		routingMode = "path" // Default to path-based routing
+	}
+
 	config := &server.Config{
-		Port:       viper.GetInt("port"),
-		Token:      viper.GetString("token"),
-		BaseDomain: viper.GetString("domain"),
+		Port:        viper.GetInt("port"),
+		Token:       viper.GetString("token"),
+		BaseDomain:  viper.GetString("domain"),
+		RoutingMode: routingMode,
 	}
 
 	if config.Token == "" {
@@ -97,6 +106,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	if config.BaseDomain == "" {
 		return fmt.Errorf("base domain is required (set EXIO_BASE_DOMAIN or use --domain)")
+	}
+
+	if routingMode != "path" && routingMode != "subdomain" {
+		return fmt.Errorf("invalid routing mode '%s': must be 'path' or 'subdomain'", routingMode)
 	}
 
 	srv, err := server.New(config)

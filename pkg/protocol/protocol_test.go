@@ -147,3 +147,126 @@ func TestConstants(t *testing.T) {
 		t.Error("MaxReconnectDelay should be greater than InitialReconnectDelay")
 	}
 }
+
+func TestExtractTunnelIDFromPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "simple path with tunnel ID",
+			path: "/bold-owl-716/api/users",
+			want: "bold-owl-716",
+		},
+		{
+			name: "tunnel ID only",
+			path: "/bold-owl-716",
+			want: "bold-owl-716",
+		},
+		{
+			name: "tunnel ID with trailing slash",
+			path: "/bold-owl-716/",
+			want: "bold-owl-716",
+		},
+		{
+			name: "empty path",
+			path: "",
+			want: "",
+		},
+		{
+			name: "root path only",
+			path: "/",
+			want: "",
+		},
+		{
+			name: "deep nested path",
+			path: "/my-tunnel/api/v2/users/123",
+			want: "my-tunnel",
+		},
+		{
+			name: "no leading slash",
+			path: "tunnel-id/path",
+			want: "tunnel-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractTunnelIDFromPath(tt.path)
+			if got != tt.want {
+				t.Errorf("ExtractTunnelIDFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripTunnelIDPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		tunnelID string
+		want     string
+	}{
+		{
+			name:     "strip prefix from nested path",
+			path:     "/bold-owl-716/api/users",
+			tunnelID: "bold-owl-716",
+			want:     "/api/users",
+		},
+		{
+			name:     "strip prefix leaving root",
+			path:     "/bold-owl-716",
+			tunnelID: "bold-owl-716",
+			want:     "/",
+		},
+		{
+			name:     "strip prefix with trailing slash",
+			path:     "/bold-owl-716/",
+			tunnelID: "bold-owl-716",
+			want:     "/",
+		},
+		{
+			name:     "empty tunnel ID returns original path",
+			path:     "/some/path",
+			tunnelID: "",
+			want:     "/some/path",
+		},
+		{
+			name:     "mismatched prefix returns original",
+			path:     "/other-id/api/users",
+			tunnelID: "bold-owl-716",
+			want:     "/other-id/api/users",
+		},
+		{
+			name:     "deep nested path",
+			path:     "/my-tunnel/api/v2/users/123",
+			tunnelID: "my-tunnel",
+			want:     "/api/v2/users/123",
+		},
+		{
+			name:     "partial match should not strip",
+			path:     "/bold-owl-716-extra/api",
+			tunnelID: "bold-owl-716",
+			want:     "/bold-owl-716-extra/api",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripTunnelIDPrefix(tt.path, tt.tunnelID)
+			if got != tt.want {
+				t.Errorf("StripTunnelIDPrefix(%q, %q) = %q, want %q", tt.path, tt.tunnelID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRoutingModeConstants(t *testing.T) {
+	if RoutingModePath != "path" {
+		t.Errorf("RoutingModePath = %q, want %q", RoutingModePath, "path")
+	}
+	if RoutingModeSubdomain != "subdomain" {
+		t.Errorf("RoutingModeSubdomain = %q, want %q", RoutingModeSubdomain, "subdomain")
+	}
+}

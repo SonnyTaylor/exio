@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -22,9 +23,10 @@ import (
 
 // Config holds the server configuration.
 type Config struct {
-	Port       int
-	Token      string
-	BaseDomain string
+	Port        int
+	Token       string
+	BaseDomain  string
+	RoutingMode string // "path" or "subdomain"
 }
 
 // ConfigFromEnv creates a config from environment variables.
@@ -34,10 +36,16 @@ func ConfigFromEnv() *Config {
 		fmt.Sscanf(p, "%d", &port)
 	}
 
+	routingMode := os.Getenv("EXIO_ROUTING_MODE")
+	if routingMode == "" {
+		routingMode = protocol.RoutingModePath // Default to path-based routing
+	}
+
 	return &Config{
-		Port:       port,
-		Token:      os.Getenv("EXIO_TOKEN"),
-		BaseDomain: os.Getenv("EXIO_BASE_DOMAIN"),
+		Port:        port,
+		Token:       os.Getenv("EXIO_TOKEN"),
+		BaseDomain:  os.Getenv("EXIO_BASE_DOMAIN"),
+		RoutingMode: routingMode,
 	}
 }
 
@@ -67,6 +75,7 @@ func New(config *Config) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(protocol.ConnectPath, s.handleConnect)
+	mux.HandleFunc("/_config", s.handleConfig)
 	mux.HandleFunc("/", s.handleRequest)
 
 	s.httpServer = &http.Server{
@@ -90,6 +99,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		s.logger.Printf("Starting server on port %d", s.config.Port)
 		s.logger.Printf("Base domain: %s", s.config.BaseDomain)
+		s.logger.Printf("Routing mode: %s", s.config.RoutingMode)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.Printf("HTTP server error: %v", err)
 		}
@@ -176,7 +186,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicURL := fmt.Sprintf("https://%s.%s", subdomain, s.config.BaseDomain)
+	var publicURL string
+	if s.config.RoutingMode == protocol.RoutingModePath {
+		publicURL = fmt.Sprintf("https://%s/%s/", s.config.BaseDomain, subdomain)
+	} else {
+		publicURL = fmt.Sprintf("https://%s.%s", subdomain, s.config.BaseDomain)
+	}
 	s.logger.Printf("Tunnel established: %s", publicURL)
 
 	// Handle session lifecycle
@@ -194,15 +209,38 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 // handleRequest handles incoming HTTP requests and routes them to the appropriate tunnel.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
-	// Extract subdomain from Host header
-	subdomain := protocol.ExtractSubdomain(r, s.config.BaseDomain)
-	if subdomain == "" {
-		http.Error(w, "Invalid host", http.StatusNotFound)
-		return
+	var tunnelID string
+
+	if s.config.RoutingMode == protocol.RoutingModePath {
+		// Extract tunnel ID from the first path segment
+		tunnelID = protocol.ExtractTunnelIDFromPath(r.URL.Path)
+		if tunnelID == "" {
+			http.Error(w, "Missing tunnel ID in path", http.StatusNotFound)
+			return
+		}
+
+		// Rewrite the path to strip the tunnel ID prefix
+		originalPath := r.URL.Path
+		r.URL.Path = protocol.StripTunnelIDPrefix(r.URL.Path, tunnelID)
+		r.RequestURI = r.URL.RequestURI()
+
+		// Also update RawPath if set
+		if r.URL.RawPath != "" {
+			r.URL.RawPath = protocol.StripTunnelIDPrefix(r.URL.RawPath, tunnelID)
+		}
+
+		s.logger.Printf("Path routing: %s -> %s (tunnel: %s)", originalPath, r.URL.Path, tunnelID)
+	} else {
+		// Extract subdomain from Host header (existing behavior)
+		tunnelID = protocol.ExtractSubdomain(r, s.config.BaseDomain)
+		if tunnelID == "" {
+			http.Error(w, "Invalid host", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Look up session
-	entry, err := s.registry.Get(subdomain)
+	entry, err := s.registry.Get(tunnelID)
 	if err != nil {
 		http.Error(w, "Tunnel not found", http.StatusNotFound)
 		return
@@ -213,7 +251,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Open a new stream to the client
 	stream, err := entry.Session.OpenStream()
 	if err != nil {
-		s.logger.Printf("Failed to open stream to %s: %v", subdomain, err)
+		s.logger.Printf("Failed to open stream to %s: %v", tunnelID, err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -328,6 +366,15 @@ func (s *Server) handleWebSocketPassthrough(w http.ResponseWriter, r *http.Reque
 	}()
 
 	wg.Wait()
+}
+
+// handleConfig returns the server configuration for clients.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"routing_mode": s.config.RoutingMode,
+		"base_domain":  s.config.BaseDomain,
+	})
 }
 
 // ActiveTunnels returns the number of active tunnel connections.
