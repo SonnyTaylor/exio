@@ -184,8 +184,9 @@ func NewClientSession(wsConn *websocket.Conn, subdomain string) (*Session, error
 // OpenStream opens a new multiplexed stream (server -> client).
 func (s *Session) OpenStream() (net.Conn, error) {
 	s.closeMu.RLock()
-	defer s.closeMu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.closeMu.RUnlock()
+	if closed {
 		return nil, ErrSessionClosed
 	}
 	return s.yamuxSession.Open()
@@ -194,10 +195,13 @@ func (s *Session) OpenStream() (net.Conn, error) {
 // AcceptStream accepts an incoming stream (client receives from server).
 func (s *Session) AcceptStream() (net.Conn, error) {
 	s.closeMu.RLock()
-	defer s.closeMu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.closeMu.RUnlock()
+	if closed {
 		return nil, ErrSessionClosed
 	}
+	// Don't hold the lock while accepting - Accept() blocks and would
+	// prevent Close() from acquiring the write lock, causing a deadlock
 	return s.yamuxSession.Accept()
 }
 
