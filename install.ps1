@@ -145,11 +145,22 @@ function Install-Exio {
         Write-Host "  Version: $version" -ForegroundColor White
         Write-Host "  Location: $destPath" -ForegroundColor White
         Write-Host ""
-        Write-Host "  Get started:" -ForegroundColor White
-        Write-Host "    exio init              # Configure your connection" -ForegroundColor Gray
-        Write-Host "    exio http 3000         # Expose port 3000" -ForegroundColor Gray
-        Write-Host ""
-        Write-Warn "Restart your terminal for PATH changes to take effect"
+        
+        # Prompt for configuration
+        $response = Read-Host "Would you like to configure Exio now? [Y/n]"
+        if ($response -ne "n" -and $response -ne "N") {
+            Write-Host ""
+            # Run exio init
+            & $destPath init
+        }
+        else {
+            Write-Host ""
+            Write-Host "  Get started later:" -ForegroundColor White
+            Write-Host "    exio init              # Configure your connection" -ForegroundColor Gray
+            Write-Host "    exio http 3000         # Expose port 3000" -ForegroundColor Gray
+            Write-Host ""
+            Write-Warn "Restart your terminal for PATH changes to take effect"
+        }
     }
     finally {
         # Cleanup

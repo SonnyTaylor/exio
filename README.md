@@ -130,7 +130,31 @@ export EXIO_BASE_DOMAIN=dev.example.com
 
 ## Server Deployment
 
-### Using systemd (Linux)
+### Quick Install (Recommended)
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/SonnyTaylor/exio/main/install-server.sh | sudo sh
+```
+
+This will download the server binary and launch the interactive setup wizard.
+
+### Interactive Setup Wizard
+
+If you already have the binary installed, run the setup wizard:
+
+```bash
+sudo exiod init
+```
+
+The wizard will:
+- Generate a secure authentication token
+- Configure your domain, port, and routing mode
+- Create the configuration file (`/etc/exio/exiod.env`)
+- Install and enable the systemd service
+- Display the client connection info to share with users
+
+### Manual Setup (Linux systemd)
 
 ```bash
 # Create exio user
@@ -222,13 +246,21 @@ Use `--no-rewrite-host` to disable this behavior if your local service requires 
 | `--no-rewrite-host` | - | Don't rewrite Host header |
 | `--tui` | - | Enable interactive request viewer |
 
-### Commands
+### Client Commands
 
 | Command | Description |
 |---------|-------------|
 | `exio init` | Interactive setup wizard |
 | `exio http <port>` | Expose local HTTP service |
 | `exio version` | Show version information |
+
+### Server Commands
+
+| Command | Description |
+|---------|-------------|
+| `exiod init` | Interactive server setup wizard (generates token, configures systemd) |
+| `exiod` | Start the server |
+| `exiod version` | Show version information |
 
 ### Server (exiod)
 

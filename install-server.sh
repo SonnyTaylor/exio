@@ -1,11 +1,11 @@
 #!/bin/sh
-# Exio installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/SonnyTaylor/exio/main/install.sh | sh
+# Exio Server installer script
+# Usage: curl -fsSL https://raw.githubusercontent.com/SonnyTaylor/exio/main/install-server.sh | sudo sh
 
 set -e
 
 REPO="SonnyTaylor/exio"
-BINARY_NAME="exio"
+BINARY_NAME="exiod"
 INSTALL_DIR="/usr/local/bin"
 
 # Colors for output
@@ -39,7 +39,7 @@ detect_os() {
         Linux*)     OS="linux" ;;
         Darwin*)    OS="darwin" ;;
         MINGW*|MSYS*|CYGWIN*)
-            error "Please use install.ps1 for Windows"
+            error "Windows is not supported for server deployment"
             ;;
         *)
             error "Unsupported operating system: $OS"
@@ -105,14 +105,32 @@ verify_checksum() {
     fi
 }
 
+# Check if running as root
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "Not running as root. Some features may be limited."
+        warn "For full functionality, run: curl -fsSL ... | sudo sh"
+        echo ""
+        printf "Continue anyway? [y/N]: "
+        read -r response
+        if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
+            echo "Aborted."
+            exit 0
+        fi
+    fi
+}
+
 # Main installation
 main() {
     echo ""
     echo "  ╭───────────────────────────────────╮"
-    echo "  │       Exio Installer              │"
+    echo "  │     Exio Server Installer         │"
     echo "  │   High-performance tunneling      │"
     echo "  ╰───────────────────────────────────╯"
     echo ""
+
+    # Check root
+    check_root
 
     # Detect platform
     OS=$(detect_os)
@@ -166,7 +184,7 @@ main() {
         warn "Make sure ~/.local/bin is in your PATH"
     else
         # Try with sudo
-        info "Requesting sudo access to install to ${INSTALL_DIR}..."
+        info "Installing to ${INSTALL_DIR}..."
         FINAL_INSTALL_DIR="$INSTALL_DIR"
         SUDO="sudo"
     fi
@@ -177,9 +195,9 @@ main() {
     ${SUDO:-} chmod +x "${FINAL_INSTALL_DIR}/${BINARY_NAME}"
 
     # Verify installation
-    if command -v exio >/dev/null 2>&1; then
-        INSTALLED_VERSION=$(exio version 2>/dev/null || echo "unknown")
-        success "Exio installed successfully!"
+    if command -v exiod >/dev/null 2>&1; then
+        INSTALLED_VERSION=$(exiod version 2>/dev/null || echo "unknown")
+        success "Exio Server installed successfully!"
         echo ""
         echo "  Version: ${INSTALLED_VERSION}"
         echo "  Location: ${FINAL_INSTALL_DIR}/${BINARY_NAME}"
@@ -187,26 +205,34 @@ main() {
         
         # Prompt for configuration if running interactively
         if [ -t 0 ] && [ -t 1 ]; then
-            printf "Would you like to configure Exio now? [Y/n]: "
+            printf "Would you like to configure the server now? [Y/n]: "
             read -r response
             if [ "$response" != "n" ] && [ "$response" != "N" ]; then
                 echo ""
-                exio init
+                # Run as root if we have sudo
+                if [ "$(id -u)" -eq 0 ]; then
+                    exiod init
+                else
+                    echo "Running setup wizard..."
+                    echo "(Run with sudo for systemd installation)"
+                    echo ""
+                    exiod init
+                fi
             else
                 echo ""
                 echo "  Get started later:"
-                echo "    exio init              # Configure your connection"
-                echo "    exio http 3000         # Expose port 3000"
+                echo "    sudo exiod init        # Configure server (recommended)"
+                echo "    exiod                  # Start server manually"
                 echo ""
             fi
         else
             echo "  Get started:"
-            echo "    exio init              # Configure your connection"
-            echo "    exio http 3000         # Expose port 3000"
+            echo "    sudo exiod init        # Interactive setup wizard"
+            echo "    exiod                  # Start server manually"
             echo ""
         fi
     else
-        success "Exio installed to ${FINAL_INSTALL_DIR}/${BINARY_NAME}"
+        success "Exio Server installed to ${FINAL_INSTALL_DIR}/${BINARY_NAME}"
         warn "Make sure ${FINAL_INSTALL_DIR} is in your PATH"
     fi
 }
