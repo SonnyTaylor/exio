@@ -56,6 +56,10 @@ type Client struct {
 	mu            sync.RWMutex
 	quietMode     bool
 
+	// Track active connections for graceful shutdown
+	activeConns   map[net.Conn]struct{}
+	activeConnsMu sync.Mutex
+
 	// Callbacks for UI updates
 	OnConnect    func(publicURL string)
 	OnDisconnect func(err error)
@@ -81,6 +85,7 @@ func New(config *Config) (*Client, error) {
 		logger:        log.New(os.Stdout, "[exio] ", log.LstdFlags|log.Lmsgprefix),
 		ctx:           ctx,
 		cancel:        cancel,
+		activeConns:   make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -258,6 +263,12 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
+			// Check if we're shutting down
+			select {
+			case <-c.ctx.Done():
+				break
+			default:
+			}
 			if session.IsClosed() {
 				break
 			}
@@ -269,7 +280,23 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.handleStream(stream)
 	}
 
-	c.wg.Wait()
+	// Wait for all handlers to complete with a timeout
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All handlers completed cleanly
+	case <-time.After(5 * time.Second):
+		// Timeout - force close any remaining connections
+		if !c.quietMode {
+			c.logger.Printf("Shutdown timeout, forcing close...")
+		}
+		c.closeAllConns()
+	}
 
 	if c.OnDisconnect != nil {
 		c.OnDisconnect(nil)
@@ -283,14 +310,31 @@ func (c *Client) handleStream(stream net.Conn) {
 	defer c.wg.Done()
 	defer stream.Close()
 
+	// Track this stream for graceful shutdown
+	c.trackConn(stream)
+	defer c.untrackConn(stream)
+
 	startTime := time.Now()
+
+	// Check if we're shutting down
+	select {
+	case <-c.ctx.Done():
+		return
+	default:
+	}
 
 	// Read the HTTP request from the stream
 	reader := bufio.NewReader(stream)
 	req, err := http.ReadRequest(reader)
 	if err != nil {
-		c.logger.Printf("Failed to read request: %v", err)
-		return
+		// Don't log errors during shutdown
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to read request: %v", err)
+			return
+		}
 	}
 
 	// Log the request (unless quiet mode is enabled)
@@ -309,15 +353,25 @@ func (c *Client) handleStream(stream net.Conn) {
 	req.Header.Set("X-Forwarded-Host", originalHost)
 	req.Header.Set("X-Forwarded-Proto", "https")
 
-	// Connect to the local service
+	// Connect to the local service with context-aware dialing
 	localAddr := net.JoinHostPort(c.config.LocalHost, fmt.Sprintf("%d", c.config.LocalPort))
-	localConn, err := net.DialTimeout("tcp", localAddr, 5*time.Second)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	localConn, err := dialer.DialContext(c.ctx, "tcp", localAddr)
 	if err != nil {
-		c.logger.Printf("Failed to connect to local service: %v", err)
-		c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to connect to local service")
-		return
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to connect to local service: %v", err)
+			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to connect to local service")
+			return
+		}
 	}
 	defer localConn.Close()
+
+	// Track local connection for graceful shutdown
+	c.trackConn(localConn)
+	defer c.untrackConn(localConn)
 
 	// Check if any buffered data exists
 	buffered := reader.Buffered()
@@ -331,24 +385,39 @@ func (c *Client) handleStream(stream net.Conn) {
 
 	// Forward the request to the local service
 	if err := req.Write(localConn); err != nil {
-		c.logger.Printf("Failed to write request to local service: %v", err)
-		c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to forward request")
-		return
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to write request to local service: %v", err)
+			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to forward request")
+			return
+		}
 	}
 
 	// Read the response from the local service
 	resp, err := http.ReadResponse(bufio.NewReader(localConn), req)
 	if err != nil {
-		c.logger.Printf("Failed to read response from local service: %v", err)
-		c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to read response")
-		return
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to read response from local service: %v", err)
+			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to read response")
+			return
+		}
 	}
 	defer resp.Body.Close()
 
 	// Write the response back to the stream
 	if err := resp.Write(stream); err != nil {
-		c.logger.Printf("Failed to write response to stream: %v", err)
-		return
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+			c.logger.Printf("Failed to write response to stream: %v", err)
+			return
+		}
 	}
 
 	duration := time.Since(startTime)
@@ -405,9 +474,37 @@ func (c *Client) heartbeat() {
 	}
 }
 
+// trackConn adds a connection to the active connections map.
+func (c *Client) trackConn(conn net.Conn) {
+	c.activeConnsMu.Lock()
+	c.activeConns[conn] = struct{}{}
+	c.activeConnsMu.Unlock()
+}
+
+// untrackConn removes a connection from the active connections map.
+func (c *Client) untrackConn(conn net.Conn) {
+	c.activeConnsMu.Lock()
+	delete(c.activeConns, conn)
+	c.activeConnsMu.Unlock()
+}
+
+// closeAllConns closes all tracked connections to unblock pending I/O.
+func (c *Client) closeAllConns() {
+	c.activeConnsMu.Lock()
+	defer c.activeConnsMu.Unlock()
+
+	for conn := range c.activeConns {
+		conn.Close()
+	}
+	c.activeConns = make(map[net.Conn]struct{})
+}
+
 // Close closes the client connection.
 func (c *Client) Close() error {
 	c.cancel()
+
+	// Close all active connections to unblock any pending I/O operations
+	c.closeAllConns()
 
 	c.mu.Lock()
 	session := c.session

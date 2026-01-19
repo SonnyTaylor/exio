@@ -206,13 +206,13 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 // UI Styles
 var (
 	// Colors
-	primaryColor   = lipgloss.Color("#7C3AED") // Purple
-	accentColor    = lipgloss.Color("#10B981") // Green
-	mutedColor     = lipgloss.Color("#6B7280") // Gray
-	successColor   = lipgloss.Color("#10B981") // Green
-	warningColor   = lipgloss.Color("#F59E0B") // Amber
-	errorColor     = lipgloss.Color("#EF4444") // Red
-	infoColor      = lipgloss.Color("#3B82F6") // Blue
+	primaryColor = lipgloss.Color("#7C3AED") // Purple
+	accentColor  = lipgloss.Color("#10B981") // Green
+	mutedColor   = lipgloss.Color("#6B7280") // Gray
+	successColor = lipgloss.Color("#10B981") // Green
+	warningColor = lipgloss.Color("#F59E0B") // Amber
+	errorColor   = lipgloss.Color("#EF4444") // Red
+	infoColor    = lipgloss.Color("#3B82F6") // Blue
 
 	// Logo/Brand
 	logoStyle = lipgloss.NewStyle().
@@ -282,37 +282,37 @@ var (
 			Width(7)
 
 	methodDeleteStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(errorColor).
-			Width(7)
+				Bold(true).
+				Foreground(errorColor).
+				Width(7)
 
 	methodPatchStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#8B5CF6")).
-			Width(7)
+				Bold(true).
+				Foreground(lipgloss.Color("#8B5CF6")).
+				Width(7)
 
 	methodDefaultStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(mutedColor).
-			Width(7)
+				Bold(true).
+				Foreground(mutedColor).
+				Width(7)
 
 	pathLogStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#D1D5DB"))
 
 	statusSuccessStyle = lipgloss.NewStyle().
-			Foreground(successColor)
+				Foreground(successColor)
 
 	statusRedirectStyle = lipgloss.NewStyle().
-			Foreground(infoColor)
+				Foreground(infoColor)
 
 	statusClientErrStyle = lipgloss.NewStyle().
-			Foreground(warningColor)
+				Foreground(warningColor)
 
 	statusServerErrStyle = lipgloss.NewStyle().
-			Foreground(errorColor)
+				Foreground(errorColor)
 
 	durationLogStyle = lipgloss.NewStyle().
-			Foreground(mutedColor)
+				Foreground(mutedColor)
 
 	arrowStyle = lipgloss.NewStyle().
 			Foreground(primaryColor)

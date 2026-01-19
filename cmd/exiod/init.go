@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	defaultConfigDir     = "/etc/exio"
-	defaultEnvFile       = "/etc/exio/exiod.env"
-	defaultSystemdPath   = "/etc/systemd/system/exiod.service"
-	defaultBinaryPath    = "/usr/local/bin/exiod"
-	defaultPort          = 8080
-	defaultRoutingMode   = "path"
+	defaultConfigDir   = "/etc/exio"
+	defaultEnvFile     = "/etc/exio/exiod.env"
+	defaultSystemdPath = "/etc/systemd/system/exiod.service"
+	defaultBinaryPath  = "/usr/local/bin/exiod"
+	defaultPort        = 8080
+	defaultRoutingMode = "path"
 )
 
 var initCmd = &cobra.Command{
