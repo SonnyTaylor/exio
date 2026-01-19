@@ -178,3 +178,34 @@ func StripTunnelIDPrefix(path, tunnelID string) string {
 
 	return path
 }
+
+// ExtractTunnelIDFromReferer extracts the tunnel ID from a Referer URL.
+// For example, "https://tunnel.example.com/bold-owl-716/page" returns "bold-owl-716".
+func ExtractTunnelIDFromReferer(referer string) string {
+	if referer == "" {
+		return ""
+	}
+
+	// Find the path portion after the host
+	// Look for :// then find the next /
+	schemeEnd := 0
+	for i := 0; i < len(referer)-2; i++ {
+		if referer[i] == ':' && referer[i+1] == '/' && referer[i+2] == '/' {
+			schemeEnd = i + 3
+			break
+		}
+	}
+
+	// Find the start of the path (first / after the host)
+	pathStart := schemeEnd
+	for pathStart < len(referer) && referer[pathStart] != '/' {
+		pathStart++
+	}
+
+	if pathStart >= len(referer) {
+		return ""
+	}
+
+	// Extract tunnel ID from the path
+	return ExtractTunnelIDFromPath(referer[pathStart:])
+}

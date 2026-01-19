@@ -210,26 +210,66 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // handleRequest handles incoming HTTP requests and routes them to the appropriate tunnel.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var tunnelID string
+	var fromPath bool
 
 	if s.config.RoutingMode == protocol.RoutingModePath {
 		// Extract tunnel ID from the first path segment
 		tunnelID = protocol.ExtractTunnelIDFromPath(r.URL.Path)
-		if tunnelID == "" {
-			http.Error(w, "Missing tunnel ID in path", http.StatusNotFound)
+		if tunnelID != "" && s.registry.Exists(tunnelID) {
+			fromPath = true
+		}
+
+		// If no valid tunnel ID in path, try cookie
+		if !fromPath {
+			if cookie, err := r.Cookie("exio_tunnel"); err == nil && cookie.Value != "" {
+				if s.registry.Exists(cookie.Value) {
+					tunnelID = cookie.Value
+					s.logger.Printf("Cookie routing: %s (tunnel: %s)", r.URL.Path, tunnelID)
+				}
+			}
+		}
+
+		// If still no tunnel, try Referer header as fallback
+		if tunnelID == "" || !s.registry.Exists(tunnelID) {
+			referer := r.Header.Get("Referer")
+			if referer != "" {
+				refererTunnelID := protocol.ExtractTunnelIDFromReferer(referer)
+				if refererTunnelID != "" && s.registry.Exists(refererTunnelID) {
+					tunnelID = refererTunnelID
+					s.logger.Printf("Referer routing: %s (tunnel: %s)", r.URL.Path, tunnelID)
+				}
+			}
+		}
+
+		if tunnelID == "" || !s.registry.Exists(tunnelID) {
+			http.Error(w, "Tunnel not found", http.StatusNotFound)
 			return
 		}
 
-		// Rewrite the path to strip the tunnel ID prefix
-		originalPath := r.URL.Path
-		r.URL.Path = protocol.StripTunnelIDPrefix(r.URL.Path, tunnelID)
-		r.RequestURI = r.URL.RequestURI()
-
-		// Also update RawPath if set
-		if r.URL.RawPath != "" {
-			r.URL.RawPath = protocol.StripTunnelIDPrefix(r.URL.RawPath, tunnelID)
+		// Set cookie for future requests (when accessing via path with tunnel ID)
+		if fromPath {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "exio_tunnel",
+				Value:    tunnelID,
+				Path:     "/",
+				MaxAge:   3600, // 1 hour
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
 		}
 
-		s.logger.Printf("Path routing: %s -> %s (tunnel: %s)", originalPath, r.URL.Path, tunnelID)
+		// Only strip tunnel ID prefix if it was in the path
+		if fromPath {
+			originalPath := r.URL.Path
+			r.URL.Path = protocol.StripTunnelIDPrefix(r.URL.Path, tunnelID)
+			r.RequestURI = r.URL.RequestURI()
+
+			if r.URL.RawPath != "" {
+				r.URL.RawPath = protocol.StripTunnelIDPrefix(r.URL.RawPath, tunnelID)
+			}
+
+			s.logger.Printf("Path routing: %s -> %s (tunnel: %s)", originalPath, r.URL.Path, tunnelID)
+		}
 	} else {
 		// Extract subdomain from Host header (existing behavior)
 		tunnelID = protocol.ExtractSubdomain(r, s.config.BaseDomain)
