@@ -48,23 +48,23 @@ type ConnectResponse struct {
 
 // TunnelInfo contains metadata about an active tunnel session.
 type TunnelInfo struct {
-	Subdomain   string    `json:"subdomain"`
-	PublicURL   string    `json:"public_url"`
-	LocalPort   int       `json:"local_port"`
-	ConnectedAt time.Time `json:"connected_at"`
-	RequestCount int64    `json:"request_count"`
+	Subdomain    string    `json:"subdomain"`
+	PublicURL    string    `json:"public_url"`
+	LocalPort    int       `json:"local_port"`
+	ConnectedAt  time.Time `json:"connected_at"`
+	RequestCount int64     `json:"request_count"`
 }
 
 // RequestLog represents a logged HTTP request passing through the tunnel.
 type RequestLog struct {
-	Timestamp    time.Time `json:"timestamp"`
-	Method       string    `json:"method"`
-	Path         string    `json:"path"`
-	StatusCode   int       `json:"status_code"`
-	Duration     time.Duration `json:"duration"`
-	BytesIn      int64     `json:"bytes_in"`
-	BytesOut     int64     `json:"bytes_out"`
-	RemoteAddr   string    `json:"remote_addr"`
+	Timestamp  time.Time     `json:"timestamp"`
+	Method     string        `json:"method"`
+	Path       string        `json:"path"`
+	StatusCode int           `json:"status_code"`
+	Duration   time.Duration `json:"duration"`
+	BytesIn    int64         `json:"bytes_in"`
+	BytesOut   int64         `json:"bytes_out"`
+	RemoteAddr string        `json:"remote_addr"`
 }
 
 // ExtractSubdomain extracts the subdomain from an HTTP request's Host header.
@@ -107,24 +107,24 @@ func itoa(i int) string {
 	if i == 0 {
 		return "0"
 	}
-	
+
 	var b [20]byte
 	n := len(b)
 	negative := i < 0
 	if negative {
 		i = -i
 	}
-	
+
 	for i > 0 {
 		n--
 		b[n] = byte('0' + i%10)
 		i /= 10
 	}
-	
+
 	if negative {
 		n--
 		b[n] = '-'
 	}
-	
+
 	return string(b[n:])
 }

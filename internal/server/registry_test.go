@@ -18,7 +18,7 @@ func TestValidateSubdomain(t *testing.T) {
 		{"minimum length", "abc", false},
 		{"mixed alphanumeric", "test42app", false},
 		{"starts with number", "123app", false},
-		
+
 		// Invalid subdomains
 		{"too short", "ab", true},
 		{"empty", "", true},
@@ -47,7 +47,7 @@ func TestSessionRegistry_RegisterAndGet(t *testing.T) {
 
 	// Test registration with nil session (for unit testing - real usage would have actual session)
 	// We can't fully test without a real transport.Session, but we can test the map logic
-	
+
 	t.Run("count starts at zero", func(t *testing.T) {
 		if registry.Count() != 0 {
 			t.Errorf("Count() = %d, want 0", registry.Count())
@@ -179,11 +179,11 @@ func TestSessionRegistry_InvalidSubdomains(t *testing.T) {
 	registry := NewSessionRegistry()
 
 	invalidSubdomains := []string{
-		"ab",          // too short
-		"-start",      // starts with hyphen
-		"end-",        // ends with hyphen
-		"has space",   // contains space
-		"has.dot",     // contains dot
+		"ab",        // too short
+		"-start",    // starts with hyphen
+		"end-",      // ends with hyphen
+		"has space", // contains space
+		"has.dot",   // contains dot
 	}
 
 	for _, subdomain := range invalidSubdomains {
@@ -196,7 +196,7 @@ func TestSessionRegistry_InvalidSubdomains(t *testing.T) {
 
 func BenchmarkRegistry_Register(b *testing.B) {
 	registry := NewSessionRegistry()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		subdomain := "bench" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26))
@@ -207,7 +207,7 @@ func BenchmarkRegistry_Register(b *testing.B) {
 func BenchmarkRegistry_Get(b *testing.B) {
 	registry := NewSessionRegistry()
 	registry.Register("testapp", nil)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		registry.Get("testapp")

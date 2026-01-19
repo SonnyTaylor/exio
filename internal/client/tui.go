@@ -89,14 +89,14 @@ func methodColor(method string) lipgloss.Style {
 
 // TUIModel is the Bubbletea model for the Exio TUI.
 type TUIModel struct {
-	client       *Client
-	requests     []protocol.RequestLog
-	viewport     viewport.Model
-	ready        bool
-	width        int
-	height       int
-	quitting     bool
-	maxRequests  int
+	client      *Client
+	requests    []protocol.RequestLog
+	viewport    viewport.Model
+	ready       bool
+	width       int
+	height      int
+	quitting    bool
+	maxRequests int
 }
 
 // NewTUIModel creates a new TUI model for the given client.
@@ -223,7 +223,7 @@ func (m TUIModel) View() string {
 	// Header
 	title := titleStyle.Render("Exio Tunnel Active")
 	url := urlStyle.Render(m.client.PublicURL())
-	
+
 	requestCount, _, _, connectedAt := m.client.Stats()
 	uptime := time.Since(connectedAt).Round(time.Second)
 	stats := statusBarStyle.Render(fmt.Sprintf(

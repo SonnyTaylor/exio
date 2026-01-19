@@ -37,7 +37,7 @@ func TestYamuxConfig(t *testing.T) {
 func TestSessionCreation(t *testing.T) {
 	// Note: Full session testing requires a WebSocket connection
 	// These tests verify the session type behavior with nil checks
-	
+
 	t.Run("session methods don't panic on checks", func(t *testing.T) {
 		// This test documents expected behavior - real integration tests
 		// would use a mock WebSocket connection
@@ -69,7 +69,7 @@ func TestWebSocketUpgrader(t *testing.T) {
 	if WebSocketUpgrader.WriteBufferSize != 16*1024 {
 		t.Errorf("WriteBufferSize = %d, want %d", WebSocketUpgrader.WriteBufferSize, 16*1024)
 	}
-	
+
 	// CheckOrigin should allow all origins
 	if WebSocketUpgrader.CheckOrigin == nil {
 		t.Error("CheckOrigin should be set")

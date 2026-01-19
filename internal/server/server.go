@@ -43,12 +43,12 @@ func ConfigFromEnv() *Config {
 
 // Server is the Exio tunneling server (exiod).
 type Server struct {
-	config       *Config
-	registry     *SessionRegistry
+	config        *Config
+	registry      *SessionRegistry
 	authenticator *auth.Authenticator
-	httpServer   *http.Server
-	logger       *log.Logger
-	wg           sync.WaitGroup
+	httpServer    *http.Server
+	logger        *log.Logger
+	wg            sync.WaitGroup
 }
 
 // New creates a new Exio server with the given configuration.

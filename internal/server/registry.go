@@ -47,12 +47,12 @@ func NewSessionRegistry() *SessionRegistry {
 // ValidateSubdomain checks if a subdomain is valid.
 func ValidateSubdomain(subdomain string) error {
 	subdomain = strings.ToLower(subdomain)
-	
+
 	// Check minimum length
 	if len(subdomain) < 3 {
 		return ErrInvalidSubdomain
 	}
-	
+
 	// Check maximum length
 	if len(subdomain) > 63 {
 		return ErrInvalidSubdomain

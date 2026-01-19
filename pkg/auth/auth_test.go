@@ -172,10 +172,10 @@ func TestAuthenticator_ValidateRequest(t *testing.T) {
 
 func TestAuthenticator_AuthorizationHeaderValue(t *testing.T) {
 	auth, _ := NewAuthenticator("my-token")
-	
+
 	got := auth.AuthorizationHeaderValue()
 	want := "Bearer my-token"
-	
+
 	if got != want {
 		t.Errorf("AuthorizationHeaderValue() = %q, want %q", got, want)
 	}
@@ -189,8 +189,8 @@ func TestConstantTimeComparison(t *testing.T) {
 	// These should all take approximately the same time
 	tokens := []string{
 		"correct-token-here",  // correct
-		"wrong-token-here!!!",  // same length, wrong
-		"x",                    // very short
+		"wrong-token-here!!!", // same length, wrong
+		"x",                   // very short
 		"this-is-a-very-long-token-that-is-definitely-wrong", // very long
 	}
 

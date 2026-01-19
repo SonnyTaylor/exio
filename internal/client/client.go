@@ -237,7 +237,7 @@ func (c *Client) handleStream(stream net.Conn) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 
 	// Connect to the local service
-	localAddr := fmt.Sprintf("%s:%d", c.config.LocalHost, c.config.LocalPort)
+	localAddr := net.JoinHostPort(c.config.LocalHost, fmt.Sprintf("%d", c.config.LocalPort))
 	localConn, err := net.DialTimeout("tcp", localAddr, 5*time.Second)
 	if err != nil {
 		c.logger.Printf("Failed to connect to local service: %v", err)
@@ -363,7 +363,7 @@ func extractBaseDomain(serverURL string) string {
 	if err != nil {
 		return "localhost"
 	}
-	
+
 	host := u.Host
 	// Remove port if present
 	for i := len(host) - 1; i >= 0; i-- {
@@ -372,6 +372,6 @@ func extractBaseDomain(serverURL string) string {
 			break
 		}
 	}
-	
+
 	return host
 }
