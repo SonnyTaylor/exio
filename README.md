@@ -1,8 +1,8 @@
 # Exio
 
-**High-performance, self-hosted tunneling protocol for exposing local services to the internet.**
+**Expose I/O** - A high-performance, self-hosted tunneling protocol for exposing local services to the internet.
 
-Exio is a developer tool that creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
+Exio creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
 
 [![CI](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml/badge.svg)](https://github.com/SonnyTaylor/exio/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/SonnyTaylor/exio)](https://github.com/SonnyTaylor/exio/releases)
