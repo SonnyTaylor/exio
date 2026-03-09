@@ -26,13 +26,13 @@ import (
 
 // Config holds the client configuration.
 type Config struct {
-	ServerURL   string
-	Token       string
-	Subdomain   string
-	LocalPort   int
-	LocalHost   string
-	RewriteHost bool
-	TunnelType  string // "http" or "tcp"
+	ServerURL            string
+	Token                string
+	Subdomain            string
+	LocalPort            int
+	LocalHost            string
+	RewriteHost          bool
+	TunnelType           string // "http" or "tcp"
 	BasicAuth            string // "user:pass" for HTTP basic auth protection
 	MaxReconnectAttempts int    // 0 = infinite retries
 }
