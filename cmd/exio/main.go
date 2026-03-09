@@ -92,12 +92,14 @@ func init() {
 	httpCmd.Flags().String("auth", "", "Protect tunnel with HTTP Basic Auth (user:pass)")
 	httpCmd.Flags().Bool("qr", false, "Display QR code for the public URL")
 	httpCmd.Flags().Bool("copy", false, "Copy public URL to clipboard")
+	httpCmd.Flags().Int("max-reconnects", 0, "Maximum reconnection attempts (0 = unlimited)")
 
 	// TCP command flags
 	tcpCmd.Flags().String("subdomain", "", "Request a specific subdomain")
 	tcpCmd.Flags().String("host", "127.0.0.1", "Local host to forward to")
 	tcpCmd.Flags().Bool("qr", false, "Display QR code for the public URL")
 	tcpCmd.Flags().Bool("copy", false, "Copy public URL to clipboard")
+	tcpCmd.Flags().Int("max-reconnects", 0, "Maximum reconnection attempts (0 = unlimited)")
 
 	// Add commands
 	rootCmd.AddCommand(httpCmd)
@@ -161,16 +163,18 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	basicAuth, _ := cmd.Flags().GetString("auth")
 	showQR, _ := cmd.Flags().GetBool("qr")
 	copyURL, _ := cmd.Flags().GetBool("copy")
+	maxReconnects, _ := cmd.Flags().GetInt("max-reconnects")
 
 	config := &client.Config{
-		ServerURL:   serverURL,
-		Token:       token,
-		Subdomain:   subdomain,
-		LocalPort:   port,
-		LocalHost:   host,
-		RewriteHost: !noRewriteHost,
-		TunnelType:  protocol.TunnelTypeHTTP,
-		BasicAuth:   basicAuth,
+		ServerURL:            serverURL,
+		Token:                token,
+		Subdomain:            subdomain,
+		LocalPort:            port,
+		LocalHost:            host,
+		RewriteHost:          !noRewriteHost,
+		TunnelType:           protocol.TunnelTypeHTTP,
+		BasicAuth:            basicAuth,
+		MaxReconnectAttempts: maxReconnects,
 	}
 
 	// Create client
@@ -178,31 +182,14 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
-	defer c.Close()
 
 	// Check if TUI mode is enabled
 	useTUI, _ := cmd.Flags().GetBool("tui")
 
-	// Setup signal handling
+	// Setup signal handling - buffered to not miss signals
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		// Stop receiving further signals on this channel
-		signal.Stop(sigChan)
-		if !useTUI {
-			// Print a clean shutdown message
-			fmt.Println()
-			shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
-			fmt.Println(shutdownStyle.Render("   Shutting down tunnel..."))
-		}
-		cancel()
-		c.Close()
-	}()
 
 	// In non-TUI mode, enable quiet mode and show a connecting spinner
 	if !useTUI {
@@ -214,25 +201,90 @@ func runHTTPTunnel(cmd *cobra.Command, args []string) error {
 
 	// Connect
 	if err := c.Connect(ctx); err != nil {
+		cancel()
+		c.Close()
+		signal.Stop(sigChan)
 		return fmt.Errorf("connection failed: %w", err)
 	}
 
 	if useTUI {
-		// Run with interactive TUI
-		go c.Run(ctx)
-		return client.RunTUI(c)
+		// Run with interactive TUI - TUI handles its own quit via 'q' or ctrl+c
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- c.Run(ctx)
+		}()
+
+		// Run TUI - this blocks until user quits
+		tuiErr := client.RunTUI(c)
+
+		// TUI exited, clean up
+		cancel()
+		c.Close()
+		signal.Stop(sigChan)
+
+		// Wait for Run to finish
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+		}
+
+		return tuiErr
 	}
 
 	// Print connection info (non-TUI mode)
 	printConnectionInfo(c, showQR, copyURL)
+
+	// Set up reconnection callbacks
+	reconnectStyle := lipgloss.NewStyle().Foreground(warningColor).Italic(true)
+	c.OnDisconnect = func(err error) {
+		if err != nil {
+			fmt.Printf("\n%s\n", reconnectStyle.Render(fmt.Sprintf("   Connection lost: %v. Reconnecting...", err)))
+		}
+	}
+	c.OnConnect = func(publicURL string) {
+		fmt.Printf("%s\n\n", statusTextStyle.Render(fmt.Sprintf("   Reconnected: %s", publicURL)))
+	}
 
 	// Set up styled request logging callback
 	c.OnRequest = func(log protocol.RequestLog) {
 		printRequest(log)
 	}
 
-	// Run and handle traffic
-	return c.Run(ctx)
+	// Run client in background
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- c.Run(ctx)
+	}()
+
+	// Wait for signal or run completion
+	shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
+	select {
+	case <-sigChan:
+		fmt.Println()
+		fmt.Println(shutdownStyle.Render("   Shutting down tunnel (press Ctrl+C again to force)..."))
+	case err := <-runDone:
+		cancel()
+		c.Close()
+		signal.Stop(sigChan)
+		return err
+	}
+
+	// Start graceful shutdown
+	cancel()
+	c.Close()
+
+	// Wait for graceful shutdown or force quit
+	select {
+	case <-runDone:
+		fmt.Println(shutdownStyle.Render("   Tunnel closed"))
+	case <-sigChan:
+		fmt.Println(shutdownStyle.Render("   Forced shutdown"))
+	case <-time.After(5 * time.Second):
+		fmt.Println(shutdownStyle.Render("   Shutdown timeout"))
+	}
+
+	signal.Stop(sigChan)
+	return nil
 }
 
 func runTCPTunnel(cmd *cobra.Command, args []string) error {
@@ -260,14 +312,16 @@ func runTCPTunnel(cmd *cobra.Command, args []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	showQR, _ := cmd.Flags().GetBool("qr")
 	copyURL, _ := cmd.Flags().GetBool("copy")
+	maxReconnects, _ := cmd.Flags().GetInt("max-reconnects")
 
 	config := &client.Config{
-		ServerURL:  serverURL,
-		Token:      token,
-		Subdomain:  subdomain,
-		LocalPort:  port,
-		LocalHost:  host,
-		TunnelType: protocol.TunnelTypeTCP,
+		ServerURL:            serverURL,
+		Token:                token,
+		Subdomain:            subdomain,
+		LocalPort:            port,
+		LocalHost:            host,
+		TunnelType:           protocol.TunnelTypeTCP,
+		MaxReconnectAttempts: maxReconnects,
 	}
 
 	// Create client
@@ -275,25 +329,11 @@ func runTCPTunnel(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
-	defer c.Close()
 
-	// Setup signal handling
+	// Setup signal handling - buffered to not miss signals
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		// Stop receiving further signals on this channel
-		signal.Stop(sigChan)
-		fmt.Println()
-		shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
-		fmt.Println(shutdownStyle.Render("   Shutting down tunnel..."))
-		cancel()
-		c.Close()
-	}()
 
 	c.SetQuietMode(true)
 	connectingStyle := lipgloss.NewStyle().Foreground(mutedColor).Italic(true)
@@ -302,14 +342,61 @@ func runTCPTunnel(cmd *cobra.Command, args []string) error {
 
 	// Connect
 	if err := c.Connect(ctx); err != nil {
+		cancel()
+		c.Close()
+		signal.Stop(sigChan)
 		return fmt.Errorf("connection failed: %w", err)
 	}
 
 	// Print connection info
 	printConnectionInfo(c, showQR, copyURL)
 
-	// Run and handle traffic
-	return c.Run(ctx)
+	// Set up reconnection callbacks
+	reconnectStyle := lipgloss.NewStyle().Foreground(warningColor).Italic(true)
+	c.OnDisconnect = func(err error) {
+		if err != nil {
+			fmt.Printf("\n%s\n", reconnectStyle.Render(fmt.Sprintf("   Connection lost: %v. Reconnecting...", err)))
+		}
+	}
+	c.OnConnect = func(publicURL string) {
+		fmt.Printf("%s\n\n", statusTextStyle.Render(fmt.Sprintf("   Reconnected: %s", publicURL)))
+	}
+
+	// Run client in background
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- c.Run(ctx)
+	}()
+
+	// Wait for signal or run completion
+	shutdownStyle := lipgloss.NewStyle().Foreground(warningColor)
+	select {
+	case <-sigChan:
+		fmt.Println()
+		fmt.Println(shutdownStyle.Render("   Shutting down tunnel (press Ctrl+C again to force)..."))
+	case err := <-runDone:
+		cancel()
+		c.Close()
+		signal.Stop(sigChan)
+		return err
+	}
+
+	// Start graceful shutdown
+	cancel()
+	c.Close()
+
+	// Wait for graceful shutdown or force quit
+	select {
+	case <-runDone:
+		fmt.Println(shutdownStyle.Render("   Tunnel closed"))
+	case <-sigChan:
+		fmt.Println(shutdownStyle.Render("   Forced shutdown"))
+	case <-time.After(5 * time.Second):
+		fmt.Println(shutdownStyle.Render("   Shutdown timeout"))
+	}
+
+	signal.Stop(sigChan)
+	return nil
 }
 
 // UI Styles

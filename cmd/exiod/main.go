@@ -50,6 +50,7 @@ func init() {
 	rootCmd.Flags().Int("tcp-port-start", 10000, "Start of TCP port allocation range")
 	rootCmd.Flags().Int("tcp-port-end", 20000, "End of TCP port allocation range")
 	rootCmd.Flags().Int("rate-limit", 0, "Rate limit per tunnel (requests per minute, 0 = unlimited)")
+	rootCmd.Flags().String("log-format", "text", "Log format: 'text' or 'json'")
 
 	viper.BindPFlag("port", rootCmd.Flags().Lookup("port"))
 	viper.BindPFlag("token", rootCmd.Flags().Lookup("token"))
@@ -58,6 +59,7 @@ func init() {
 	viper.BindPFlag("tcp-port-start", rootCmd.Flags().Lookup("tcp-port-start"))
 	viper.BindPFlag("tcp-port-end", rootCmd.Flags().Lookup("tcp-port-end"))
 	viper.BindPFlag("rate-limit", rootCmd.Flags().Lookup("rate-limit"))
+	viper.BindPFlag("log-format", rootCmd.Flags().Lookup("log-format"))
 
 	// Add version command
 	rootCmd.AddCommand(&cobra.Command{
@@ -92,6 +94,7 @@ func initConfig() {
 	viper.BindEnv("tcp-port-start", "EXIO_TCP_PORT_START")
 	viper.BindEnv("tcp-port-end", "EXIO_TCP_PORT_END")
 	viper.BindEnv("rate-limit", "EXIO_RATE_LIMIT")
+	viper.BindEnv("log-format", "EXIO_LOG_FORMAT")
 
 	viper.ReadInConfig()
 }
@@ -110,6 +113,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		TCPPortStart: viper.GetInt("tcp-port-start"),
 		TCPPortEnd:   viper.GetInt("tcp-port-end"),
 		RateLimit:    viper.GetInt("rate-limit"),
+		Version:      version,
+		LogFormat:    viper.GetString("log-format"),
 	}
 
 	if config.Token == "" {

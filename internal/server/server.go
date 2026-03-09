@@ -6,17 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/sonnytaylor/exio/pkg/auth"
+	"github.com/sonnytaylor/exio/pkg/logging"
 	"github.com/sonnytaylor/exio/pkg/protocol"
 	"github.com/sonnytaylor/exio/pkg/transport"
 	"golang.org/x/time/rate"
@@ -31,6 +32,8 @@ type Config struct {
 	TCPPortStart int    // Start of TCP port allocation range
 	TCPPortEnd   int    // End of TCP port allocation range
 	RateLimit    int    // Requests per minute (0 = unlimited)
+	Version      string // Server version for health endpoint
+	LogFormat    string // "json" or "text" (default: "text")
 }
 
 // ConfigFromEnv creates a config from environment variables.
@@ -77,8 +80,10 @@ type Server struct {
 	registry      *SessionRegistry
 	authenticator *auth.Authenticator
 	httpServer    *http.Server
-	logger        *log.Logger
+	logger        *logging.Logger
 	wg            sync.WaitGroup
+	startedAt     time.Time
+	totalRequests atomic.Int64
 }
 
 // New creates a new Exio server with the given configuration.
@@ -92,12 +97,15 @@ func New(config *Config) (*Server, error) {
 		config:        config,
 		registry:      NewSessionRegistry(config.TCPPortStart, config.TCPPortEnd),
 		authenticator: authenticator,
-		logger:        log.New(os.Stdout, "[exiod] ", log.LstdFlags|log.Lmsgprefix),
+		logger:        logging.New(os.Stdout, "[exiod] ", config.LogFormat == "json"),
+		startedAt:     time.Now(),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(protocol.ConnectPath, s.handleConnect)
 	mux.HandleFunc("/_config", s.handleConfig)
+	mux.HandleFunc("/_health", s.handleHealth)
+	mux.HandleFunc("/_metrics", s.handleMetrics)
 	mux.HandleFunc("/", s.handleRequest)
 
 	s.httpServer = &http.Server{
@@ -113,49 +121,98 @@ func New(config *Config) (*Server, error) {
 
 // Run starts the server and blocks until shutdown.
 func (s *Server) Run(ctx context.Context) error {
-	// Setup signal handling
+	// Setup signal handling - buffered channel to not miss signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// Create a cancellable context for shutdown coordination
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Start HTTP server
+	serverErrChan := make(chan error, 1)
 	go func() {
-		s.logger.Printf("Starting server on port %d", s.config.Port)
-		s.logger.Printf("Base domain: %s", s.config.BaseDomain)
-		s.logger.Printf("Routing mode: %s", s.config.RoutingMode)
+		s.logger.Info("Starting server", "port", s.config.Port)
+		s.logger.Info("Base domain configured", "domain", s.config.BaseDomain)
+		s.logger.Info("Routing mode configured", "mode", s.config.RoutingMode)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Printf("HTTP server error: %v", err)
+			serverErrChan <- err
 		}
+		close(serverErrChan)
 	}()
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal or server error
+	var shutdownReason string
 	select {
 	case sig := <-sigChan:
-		s.logger.Printf("Received signal %v, shutting down...", sig)
+		shutdownReason = fmt.Sprintf("Received signal %v", sig)
 	case <-ctx.Done():
-		s.logger.Printf("Context cancelled, shutting down...")
+		shutdownReason = "Context cancelled"
+	case err := <-serverErrChan:
+		if err != nil {
+			return fmt.Errorf("HTTP server error: %w", err)
+		}
+		return nil
 	}
 
-	// Stop receiving signals on this channel
-	signal.Stop(sigChan)
+	s.logger.Info("Shutting down gracefully", "reason", shutdownReason)
+	cancel() // Cancel context to signal all goroutines
 
-	return s.Shutdown()
+	// Start graceful shutdown in background
+	shutdownComplete := make(chan error, 1)
+	go func() {
+		shutdownComplete <- s.Shutdown()
+	}()
+
+	// Wait for graceful shutdown or force quit
+	select {
+	case err := <-shutdownComplete:
+		return err
+	case <-sigChan:
+		s.logger.Warn("Forced shutdown requested")
+		// Force close everything
+		s.registry.CloseAll()
+		s.httpServer.Close() // Force close, not graceful
+		return nil
+	}
 }
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown() error {
-	// Close all active sessions
+	activeTunnels := s.registry.Count()
+	if activeTunnels > 0 {
+		s.logger.Info("Closing active tunnels", "count", activeTunnels)
+	}
+
+	// Close all active sessions first to stop accepting new streams
 	s.registry.CloseAll()
 
-	// Shutdown HTTP server
+	// Shutdown HTTP server with timeout
+	s.logger.Info("Stopping HTTP server")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		return fmt.Errorf("error shutting down HTTP server: %w", err)
+		s.logger.Error("HTTP server shutdown error", "error", err)
+		// Force close if graceful shutdown fails
+		s.httpServer.Close()
 	}
 
-	s.wg.Wait()
-	s.logger.Printf("Server shutdown complete")
+	// Wait for goroutines with timeout
+	s.logger.Info("Waiting for connections to finish")
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.logger.Info("Server shutdown complete")
+	case <-time.After(5 * time.Second):
+		s.logger.Warn("Shutdown timeout, some connections may not have finished cleanly")
+	}
+
 	return nil
 }
 
@@ -163,7 +220,7 @@ func (s *Server) Shutdown() error {
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Authenticate the request
 	if err := s.authenticator.ValidateRequest(r); err != nil {
-		s.logger.Printf("Authentication failed: %v", err)
+		s.logger.Warn("Authentication failed", "error", err)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -208,7 +265,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		var err error
 		tcpPort, err = s.registry.AllocateTCPPort(subdomain)
 		if err != nil {
-			s.logger.Printf("Failed to allocate TCP port: %v", err)
+			s.logger.Error("Failed to allocate TCP port", "error", err)
 			http.Error(w, "No available TCP ports", http.StatusServiceUnavailable)
 			return
 		}
@@ -216,7 +273,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Start TCP listener
 		tcpListener, err = net.Listen("tcp", fmt.Sprintf(":%d", tcpPort))
 		if err != nil {
-			s.logger.Printf("Failed to start TCP listener on port %d: %v", tcpPort, err)
+			s.logger.Error("Failed to start TCP listener", "port", tcpPort, "error", err)
 			s.registry.ReleaseTCPPort(tcpPort)
 			http.Error(w, "Failed to start TCP listener", http.StatusInternalServerError)
 			return
@@ -232,7 +289,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Upgrade to WebSocket
 	wsConn, err := transport.WebSocketUpgrader.Upgrade(w, r, responseHeaders)
 	if err != nil {
-		s.logger.Printf("WebSocket upgrade failed: %v", err)
+		s.logger.Error("WebSocket upgrade failed", "error", err)
 		if tcpListener != nil {
 			tcpListener.Close()
 			s.registry.ReleaseTCPPort(tcpPort)
@@ -243,7 +300,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Create yamux session
 	session, err := transport.NewServerSession(wsConn, subdomain)
 	if err != nil {
-		s.logger.Printf("Failed to create session: %v", err)
+		s.logger.Error("Failed to create session", "error", err)
 		wsConn.Close()
 		if tcpListener != nil {
 			tcpListener.Close()
@@ -262,7 +319,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Register the session
 	if err := s.registry.RegisterWithOptions(subdomain, session, tunnelType, tcpPort, tcpListener, limiter); err != nil {
-		s.logger.Printf("Failed to register session: %v", err)
+		s.logger.Error("Failed to register session", "error", err)
 		session.Close()
 		if tcpListener != nil {
 			tcpListener.Close()
@@ -274,13 +331,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var publicURL string
 	if tunnelType == protocol.TunnelTypeTCP {
 		publicURL = fmt.Sprintf("tcp://%s:%d", s.config.BaseDomain, tcpPort)
-		s.logger.Printf("TCP tunnel established: %s (port %d)", subdomain, tcpPort)
+		s.logger.Info("TCP tunnel established", "subdomain", subdomain, "port", tcpPort)
 	} else if s.config.RoutingMode == protocol.RoutingModePath {
 		publicURL = fmt.Sprintf("https://%s/%s/", s.config.BaseDomain, subdomain)
-		s.logger.Printf("HTTP tunnel established: %s", publicURL)
+		s.logger.Info("HTTP tunnel established", "url", publicURL, "subdomain", subdomain)
 	} else {
 		publicURL = fmt.Sprintf("https://%s.%s", subdomain, s.config.BaseDomain)
-		s.logger.Printf("HTTP tunnel established: %s", publicURL)
+		s.logger.Info("HTTP tunnel established", "url", publicURL, "subdomain", subdomain)
 	}
 
 	// Handle session lifecycle
@@ -301,7 +358,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 		// Wait for session to close
 		<-session.Context().Done()
-		s.logger.Printf("Tunnel closed: %s", subdomain)
+		s.logger.Info("Tunnel closed", "subdomain", subdomain)
 	}()
 }
 
@@ -310,14 +367,25 @@ func (s *Server) handleTCPListener(listener net.Listener, session *transport.Ses
 	defer listener.Close()
 
 	for {
+		// Check if session is closed before accepting
+		select {
+		case <-session.Context().Done():
+			return
+		default:
+		}
+
 		conn, err := listener.Accept()
 		if err != nil {
-			// Check if listener was closed
+			// Check if listener was closed (shutdown in progress)
 			select {
 			case <-session.Context().Done():
 				return
 			default:
-				s.logger.Printf("TCP accept error for %s: %v", subdomain, err)
+				// Check if it's a "use of closed network connection" error
+				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+					return
+				}
+				s.logger.Error("TCP accept error", "subdomain", subdomain, "error", err)
 				continue
 			}
 		}
@@ -331,15 +399,20 @@ func (s *Server) handleTCPListener(listener net.Listener, session *transport.Ses
 
 		// Check rate limit
 		if entry.RateLimiter != nil && !entry.RateLimiter.Allow() {
-			s.logger.Printf("TCP rate limit exceeded for %s", subdomain)
+			s.logger.Warn("TCP rate limit exceeded", "subdomain", subdomain)
 			conn.Close()
 			continue
 		}
 
 		entry.RequestCount.Add(1)
+		s.totalRequests.Add(1)
 
 		// Handle connection in goroutine
-		go s.bridgeTCPConnection(conn, session, subdomain)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.bridgeTCPConnection(conn, session, subdomain)
+		}()
 	}
 }
 
@@ -350,7 +423,7 @@ func (s *Server) bridgeTCPConnection(conn net.Conn, session *transport.Session, 
 	// Open a new stream to the client
 	stream, err := session.OpenStream()
 	if err != nil {
-		s.logger.Printf("Failed to open stream for TCP tunnel %s: %v", subdomain, err)
+		s.logger.Error("Failed to open stream for TCP tunnel", "subdomain", subdomain, "error", err)
 		return
 	}
 	defer stream.Close()
@@ -389,7 +462,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			if cookie, err := r.Cookie("exio_tunnel"); err == nil && cookie.Value != "" {
 				if s.registry.Exists(cookie.Value) {
 					tunnelID = cookie.Value
-					s.logger.Printf("Cookie routing: %s (tunnel: %s)", r.URL.Path, tunnelID)
+					s.logger.Info("Cookie routing", "path", r.URL.Path, "tunnel", tunnelID)
 				}
 			}
 		}
@@ -401,7 +474,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				refererTunnelID := protocol.ExtractTunnelIDFromReferer(referer)
 				if refererTunnelID != "" && s.registry.Exists(refererTunnelID) {
 					tunnelID = refererTunnelID
-					s.logger.Printf("Referer routing: %s (tunnel: %s)", r.URL.Path, tunnelID)
+					s.logger.Info("Referer routing", "path", r.URL.Path, "tunnel", tunnelID)
 				}
 			}
 		}
@@ -433,7 +506,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				r.URL.RawPath = protocol.StripTunnelIDPrefix(r.URL.RawPath, tunnelID)
 			}
 
-			s.logger.Printf("Path routing: %s -> %s (tunnel: %s)", originalPath, r.URL.Path, tunnelID)
+			s.logger.Info("Path routing", "from", originalPath, "to", r.URL.Path, "tunnel", tunnelID)
 		}
 	} else {
 		// Extract subdomain from Host header (existing behavior)
@@ -458,11 +531,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry.RequestCount.Add(1)
+	s.totalRequests.Add(1)
 
 	// Open a new stream to the client
 	stream, err := entry.Session.OpenStream()
 	if err != nil {
-		s.logger.Printf("Failed to open stream to %s: %v", tunnelID, err)
+		s.logger.Error("Failed to open stream", "tunnel", tunnelID, "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -470,7 +544,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Write the HTTP request to the stream
 	if err := r.Write(stream); err != nil {
-		s.logger.Printf("Failed to write request to stream: %v", err)
+		s.logger.Error("Failed to write request to stream", "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -478,7 +552,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Read the response from the stream
 	resp, err := http.ReadResponse(bufio.NewReader(stream), r)
 	if err != nil {
-		s.logger.Printf("Failed to read response from stream: %v", err)
+		s.logger.Error("Failed to read response from stream", "error", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -585,6 +659,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"routing_mode": s.config.RoutingMode,
 		"base_domain":  s.config.BaseDomain,
+	})
+}
+
+// handleHealth returns server health status.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	uptime := time.Since(s.startedAt)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "ok",
+		"version":        s.config.Version,
+		"uptime_seconds": int64(uptime.Seconds()),
+		"uptime_human":   uptime.Round(time.Second).String(),
+		"active_tunnels": s.registry.Count(),
+		"total_requests": s.totalRequests.Load(),
+		"routing_mode":   s.config.RoutingMode,
 	})
 }
 

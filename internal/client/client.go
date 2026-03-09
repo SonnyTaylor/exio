@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/sonnytaylor/exio/pkg/auth"
+	"github.com/sonnytaylor/exio/pkg/logging"
 	"github.com/sonnytaylor/exio/pkg/protocol"
 	"github.com/sonnytaylor/exio/pkg/transport"
 )
@@ -33,7 +33,8 @@ type Config struct {
 	LocalHost   string
 	RewriteHost bool
 	TunnelType  string // "http" or "tcp"
-	BasicAuth   string // "user:pass" for HTTP basic auth protection
+	BasicAuth            string // "user:pass" for HTTP basic auth protection
+	MaxReconnectAttempts int    // 0 = infinite retries
 }
 
 // ServerConfig holds the server's configuration returned from /_config endpoint.
@@ -48,7 +49,7 @@ type Client struct {
 	serverConfig  *ServerConfig
 	authenticator *auth.Authenticator
 	session       *transport.Session
-	logger        *log.Logger
+	logger        *logging.Logger
 	publicURL     string
 	remotePort    int // For TCP tunnels
 	requestCount  atomic.Int64
@@ -59,6 +60,7 @@ type Client struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	mu            sync.RWMutex
+	reconnecting  atomic.Bool
 	quietMode     bool
 
 	// Track active connections for graceful shutdown
@@ -87,7 +89,7 @@ func New(config *Config) (*Client, error) {
 	return &Client{
 		config:        config,
 		authenticator: authenticator,
-		logger:        log.New(os.Stdout, "[exio] ", log.LstdFlags|log.Lmsgprefix),
+		logger:        logging.New(os.Stdout, "[exio] ", false),
 		ctx:           ctx,
 		cancel:        cancel,
 		activeConns:   make(map[net.Conn]struct{}),
@@ -112,7 +114,7 @@ func (c *Client) fetchServerConfig(ctx context.Context) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		// If we can't reach the config endpoint, assume subdomain mode for backward compatibility
-		c.logger.Printf("Warning: Could not fetch server config, assuming subdomain mode: %v", err)
+		c.logger.Warn("Could not fetch server config, assuming subdomain mode", "error", err)
 		c.serverConfig = &ServerConfig{
 			RoutingMode: protocol.RoutingModeSubdomain,
 			BaseDomain:  extractBaseDomain(c.config.ServerURL),
@@ -123,7 +125,7 @@ func (c *Client) fetchServerConfig(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		// Older servers may not have /_config endpoint
-		c.logger.Printf("Warning: Server config endpoint returned %d, assuming subdomain mode", resp.StatusCode)
+		c.logger.Warn("Server config endpoint error, assuming subdomain mode", "status", resp.StatusCode)
 		c.serverConfig = &ServerConfig{
 			RoutingMode: protocol.RoutingModeSubdomain,
 			BaseDomain:  extractBaseDomain(c.config.ServerURL),
@@ -151,6 +153,18 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err := c.fetchServerConfig(ctx); err != nil {
 		return fmt.Errorf("failed to fetch server config: %w", err)
 	}
+	return c.connect(ctx)
+}
+
+// connect performs the actual WebSocket connection with exponential backoff.
+func (c *Client) connect(ctx context.Context) error {
+	// Clean up old session if reconnecting
+	c.mu.Lock()
+	if c.session != nil {
+		c.session.Close()
+		c.session = nil
+	}
+	c.mu.Unlock()
 
 	// Build the WebSocket URL
 	serverURL, err := url.Parse(c.config.ServerURL)
@@ -178,7 +192,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	q.Set(protocol.TunnelTypeQueryParam, tunnelType)
 	serverURL.RawQuery = q.Encode()
 
-	c.logger.Printf("Connecting to %s", serverURL.String())
+	c.logger.Info("Connecting", "url", serverURL.String())
 
 	// Create WebSocket dialer with auth header
 	dialer := websocket.Dialer{
@@ -214,7 +228,7 @@ func (c *Client) Connect(ctx context.Context) error {
 			}
 		}
 
-		c.logger.Printf("Connection failed: %v, retrying in %v", err, delay)
+		c.logger.Warn("Connection failed, retrying", "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():
@@ -261,9 +275,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 
 	if !c.quietMode {
-		c.logger.Printf("Tunnel established!")
-		c.logger.Printf("Public URL: %s", c.publicURL)
-		c.logger.Printf("Forwarding to: %s:%d", c.config.LocalHost, c.config.LocalPort)
+		c.logger.Info("Tunnel established")
+		c.logger.Info("Public URL", "url", c.publicURL)
+		c.logger.Info("Forwarding", "host", c.config.LocalHost, "port", c.config.LocalPort)
 	}
 
 	if c.OnConnect != nil {
@@ -275,6 +289,72 @@ func (c *Client) Connect(ctx context.Context) error {
 
 // Run starts accepting and forwarding traffic. Blocks until disconnected.
 func (c *Client) Run(ctx context.Context) error {
+	var reconnectCount int
+	for {
+		err := c.runOnce(ctx)
+
+		// If context was cancelled, this is an intentional shutdown
+		if c.ctx.Err() != nil {
+			return nil
+		}
+
+		// Check max reconnect attempts
+		if c.config.MaxReconnectAttempts > 0 && reconnectCount >= c.config.MaxReconnectAttempts {
+			if c.OnDisconnect != nil {
+				c.OnDisconnect(fmt.Errorf("max reconnect attempts (%d) reached", c.config.MaxReconnectAttempts))
+			}
+			return fmt.Errorf("max reconnect attempts (%d) reached", c.config.MaxReconnectAttempts)
+		}
+
+		// Notify about disconnect
+		c.reconnecting.Store(true)
+		if c.OnDisconnect != nil {
+			c.OnDisconnect(err)
+		}
+
+		// Exponential backoff
+		delay := protocol.InitialReconnectDelay
+		for i := 0; i < reconnectCount; i++ {
+			delay *= 2
+			if delay > protocol.MaxReconnectDelay {
+				delay = protocol.MaxReconnectDelay
+				break
+			}
+		}
+
+		if !c.quietMode {
+			c.logger.Warn("Connection lost, reconnecting", "delay", delay, "attempt", reconnectCount+1)
+		}
+
+		select {
+		case <-c.ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+
+		// Attempt reconnection
+		if err := c.connect(c.ctx); err != nil {
+			if !c.quietMode {
+				c.logger.Error("Reconnection failed", "error", err)
+			}
+			reconnectCount++
+			continue
+		}
+
+		// Reconnected successfully
+		reconnectCount = 0
+		c.reconnecting.Store(false)
+		if !c.quietMode {
+			c.logger.Info("Reconnected", "url", c.publicURL)
+		}
+		if c.OnConnect != nil {
+			c.OnConnect(c.publicURL)
+		}
+	}
+}
+
+// runOnce runs a single session's accept loop. Returns when the session disconnects.
+func (c *Client) runOnce(ctx context.Context) error {
 	c.mu.RLock()
 	session := c.session
 	c.mu.RUnlock()
@@ -290,9 +370,18 @@ func (c *Client) Run(ctx context.Context) error {
 	// Determine if we're handling TCP or HTTP
 	isTCP := c.config.TunnelType == protocol.TunnelTypeTCP
 
+	var lastErr error
+
 	// Accept incoming streams
 acceptLoop:
 	for {
+		// Check if we're shutting down before accepting
+		select {
+		case <-c.ctx.Done():
+			break acceptLoop
+		default:
+		}
+
 		stream, err := session.AcceptStream()
 		if err != nil {
 			// Check if we're shutting down
@@ -302,9 +391,13 @@ acceptLoop:
 			default:
 			}
 			if session.IsClosed() {
+				lastErr = fmt.Errorf("session closed")
 				break acceptLoop
 			}
-			c.logger.Printf("Failed to accept stream: %v", err)
+			// Only log if not shutting down
+			if !c.quietMode {
+				c.logger.Error("Failed to accept stream", "error", err)
+			}
 			continue
 		}
 
@@ -325,20 +418,15 @@ acceptLoop:
 
 	select {
 	case <-done:
-		// All handlers completed cleanly
-	case <-time.After(5 * time.Second):
-		// Timeout - force close any remaining connections
-		if !c.quietMode {
-			c.logger.Printf("Shutdown timeout, forcing close...")
-		}
+	case <-time.After(3 * time.Second):
 		c.closeAllConns()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 
-	if c.OnDisconnect != nil {
-		c.OnDisconnect(nil)
-	}
-
-	return nil
+	return lastErr
 }
 
 // handleStream handles an incoming stream from the server.
@@ -368,14 +456,14 @@ func (c *Client) handleStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to read request: %v", err)
+			c.logger.Error("Failed to read request", "error", err)
 			return
 		}
 	}
 
 	// Log the request (unless quiet mode is enabled)
 	if !c.quietMode {
-		c.logger.Printf("%s %s", req.Method, req.URL.Path)
+		c.logger.Info("Request", "method", req.Method, "path", req.URL.Path)
 	}
 
 	// Validate Basic Auth if configured
@@ -406,7 +494,7 @@ func (c *Client) handleStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to connect to local service: %v", err)
+			c.logger.Error("Failed to connect to local service", "error", err)
 			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to connect to local service")
 			return
 		}
@@ -433,7 +521,7 @@ func (c *Client) handleStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to write request to local service: %v", err)
+			c.logger.Error("Failed to write request to local service", "error", err)
 			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to forward request")
 			return
 		}
@@ -446,7 +534,7 @@ func (c *Client) handleStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to read response from local service: %v", err)
+			c.logger.Error("Failed to read response from local service", "error", err)
 			c.sendErrorResponse(stream, http.StatusBadGateway, "Failed to read response")
 			return
 		}
@@ -462,7 +550,7 @@ func (c *Client) handleStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to write response to stream: %v", err)
+			c.logger.Error("Failed to write response to stream", "error", err)
 			return
 		}
 	}
@@ -513,7 +601,7 @@ func (c *Client) handleTCPStream(stream net.Conn) {
 		case <-c.ctx.Done():
 			return
 		default:
-			c.logger.Printf("Failed to connect to local service: %v", err)
+			c.logger.Error("Failed to connect to local service", "error", err)
 			return
 		}
 	}
@@ -527,7 +615,7 @@ func (c *Client) handleTCPStream(stream net.Conn) {
 
 	// Log the connection (unless quiet mode)
 	if !c.quietMode {
-		c.logger.Printf("TCP connection bridged to %s", localAddr)
+		c.logger.Info("TCP connection bridged", "addr", localAddr)
 	}
 
 	// Bidirectional copy
@@ -651,21 +739,24 @@ func (c *Client) closeAllConns() {
 	c.activeConns = make(map[net.Conn]struct{})
 }
 
-// Close closes the client connection.
+// Close closes the client connection gracefully.
 func (c *Client) Close() error {
+	// Cancel context first to signal all goroutines to stop
 	c.cancel()
 
-	// Close all active connections to unblock any pending I/O operations
-	c.closeAllConns()
-
+	// Close the session to unblock AcceptStream
 	c.mu.Lock()
 	session := c.session
 	c.session = nil
 	c.mu.Unlock()
 
 	if session != nil {
-		return session.Close()
+		session.Close()
 	}
+
+	// Close all active connections to unblock any pending I/O operations
+	c.closeAllConns()
+
 	return nil
 }
 
