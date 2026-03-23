@@ -330,7 +330,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	var publicURL string
 	if tunnelType == protocol.TunnelTypeTCP {
-		publicURL = fmt.Sprintf("tcp://%s:%d", s.config.BaseDomain, tcpPort)
 		s.logger.Info("TCP tunnel established", "subdomain", subdomain, "port", tcpPort)
 	} else if s.config.RoutingMode == protocol.RoutingModePath {
 		publicURL = fmt.Sprintf("https://%s/%s/", s.config.BaseDomain, subdomain)
@@ -570,87 +569,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Copy response body
 	io.Copy(w, resp.Body)
-}
-
-// handleHijackedRequest handles requests that may need connection hijacking (WebSocket passthrough).
-func (s *Server) handleHijackedRequest(w http.ResponseWriter, r *http.Request, stream net.Conn) {
-	// Check if this is a WebSocket upgrade request
-	if r.Header.Get("Upgrade") == "websocket" {
-		s.handleWebSocketPassthrough(w, r, stream)
-		return
-	}
-
-	// For non-WebSocket requests, use the standard request handling
-	// Write the HTTP request to the stream
-	if err := r.Write(stream); err != nil {
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return
-	}
-
-	// Read and forward the response
-	resp, err := http.ReadResponse(bufio.NewReader(stream), r)
-	if err != nil {
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Copy response headers
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
-
-// handleWebSocketPassthrough handles WebSocket upgrade requests through the tunnel.
-func (s *Server) handleWebSocketPassthrough(w http.ResponseWriter, r *http.Request, stream net.Conn) {
-	// Hijack the connection for bidirectional streaming
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "WebSocket passthrough not supported", http.StatusInternalServerError)
-		return
-	}
-
-	conn, buf, err := hijacker.Hijack()
-	if err != nil {
-		http.Error(w, "Failed to hijack connection", http.StatusInternalServerError)
-		return
-	}
-	defer conn.Close()
-
-	// Write the original request to the stream
-	if err := r.Write(stream); err != nil {
-		return
-	}
-
-	// Flush any buffered data
-	if buf.Reader.Buffered() > 0 {
-		buffered := make([]byte, buf.Reader.Buffered())
-		buf.Read(buffered)
-		stream.Write(buffered)
-	}
-
-	// Bidirectional copy
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(stream, conn)
-		stream.Close()
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(conn, stream)
-		conn.Close()
-	}()
-
-	wg.Wait()
 }
 
 // handleConfig returns the server configuration for clients.

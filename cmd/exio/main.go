@@ -415,22 +415,6 @@ var (
 			Bold(true).
 			Foreground(primaryColor)
 
-	// Main container
-	containerStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(primaryColor).
-			Padding(1, 2).
-			MarginTop(1).
-			MarginBottom(1)
-
-	// Title
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(primaryColor).
-			Padding(0, 2).
-			MarginBottom(1)
-
 	// URL display
 	urlLabelStyle = lipgloss.NewStyle().
 			Foreground(mutedColor)

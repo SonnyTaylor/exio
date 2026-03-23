@@ -505,16 +505,6 @@ func (c *Client) handleStream(stream net.Conn) {
 	c.trackConn(localConn)
 	defer c.untrackConn(localConn)
 
-	// Check if any buffered data exists
-	buffered := reader.Buffered()
-	if buffered > 0 {
-		// Read buffered data and prepend to request body
-		buf := make([]byte, buffered)
-		reader.Read(buf)
-		// We need to handle this buffered data properly
-		// For now, we'll write it after the request
-	}
-
 	// Forward the request to the local service
 	if err := req.Write(localConn); err != nil {
 		select {
