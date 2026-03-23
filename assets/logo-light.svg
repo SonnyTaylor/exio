@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Right-pointing arrow (outbound) -->
+  <path d="M 80,200 L 300,200 L 300,150 L 420,230 L 300,310 L 300,260 L 80,260 Z" fill="#000" opacity="0.85"/>
+  <!-- Left-pointing arrow (inbound) -->
+  <path d="M 432,310 L 212,310 L 212,360 L 92,280 L 212,200 L 212,250 L 432,250 Z" fill="#000" opacity="0.3"/>
+  <!-- Data packets -->
+  <circle cx="140" cy="230" r="10" fill="#fff" opacity="0.9"/>
+  <circle cx="200" cy="230" r="10" fill="#fff" opacity="0.7"/>
+  <circle cx="260" cy="230" r="10" fill="#fff" opacity="0.5"/>
+  <circle cx="370" cy="280" r="10" fill="#000" opacity="0.15"/>
+  <circle cx="310" cy="280" r="10" fill="#000" opacity="0.25"/>
+  <circle cx="250" cy="280" r="10" fill="#000" opacity="0.35"/>
+</svg>

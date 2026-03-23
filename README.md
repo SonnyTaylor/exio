@@ -1,6 +1,14 @@
-# Exio
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+    <img alt="Exio" src="assets/logo-light.svg" width="200">
+  </picture>
+</p>
 
-**Expose I/O** - A high-performance, self-hosted tunneling protocol for exposing local services to the internet.
+<h1 align="center">Exio</h1>
+
+<p align="center"><strong>Expose I/O</strong> — A high-performance, self-hosted tunneling protocol for exposing local services to the internet.</p>
 
 Exio creates secure tunnels from your local machine to a public server, allowing you to expose local HTTP and TCP services to the internet. It's designed to work seamlessly behind Cloudflare Tunnels for DDoS protection and SSL termination.
 
