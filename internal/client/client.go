@@ -228,7 +228,9 @@ func (c *Client) connect(ctx context.Context) error {
 			}
 		}
 
-		c.logger.Warn("Connection failed, retrying", "error", err, "delay", delay)
+		if !c.quietMode {
+			c.logger.Warn("Connection failed, retrying", "error", err, "delay", delay)
+		}
 
 		select {
 		case <-ctx.Done():

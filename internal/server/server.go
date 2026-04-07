@@ -365,6 +365,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTCPListener(listener net.Listener, session *transport.Session, subdomain string) {
 	defer listener.Close()
 
+	acceptErrorCount := 0
+
 	for {
 		// Check if session is closed before accepting
 		select {
@@ -384,10 +386,28 @@ func (s *Server) handleTCPListener(listener net.Listener, session *transport.Ses
 				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 					return
 				}
-				s.logger.Error("TCP accept error", "subdomain", subdomain, "error", err)
+				acceptErrorCount++
+				if acceptErrorCount <= 5 {
+					s.logger.Error("TCP accept error", "subdomain", subdomain, "error", err)
+				} else if acceptErrorCount == 6 {
+					s.logger.Error("TCP accept errors continuing, suppressing further logs", "subdomain", subdomain, "count", acceptErrorCount)
+				}
+				// Backoff on repeated accept errors to prevent tight-loop log spam
+				delay := time.Duration(acceptErrorCount) * 100 * time.Millisecond
+				if delay > 5*time.Second {
+					delay = 5 * time.Second
+				}
+				select {
+				case <-session.Context().Done():
+					return
+				case <-time.After(delay):
+				}
 				continue
 			}
 		}
+
+		// Reset error count on successful accept
+		acceptErrorCount = 0
 
 		// Get session entry for rate limiting
 		entry, err := s.registry.Get(subdomain)
